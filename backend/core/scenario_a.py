@@ -36,6 +36,7 @@ async def handle_chat(req):
     # 在 return 前加入紀錄
     logger.log_event(
         subject_id=req.user_id,
+        chat_id=req.chat_id,
         scenario="A",
         trigger_type=req.trigger_type,
         user_input=req.message,

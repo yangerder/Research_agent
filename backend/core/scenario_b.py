@@ -5,7 +5,7 @@ from groq import Groq
 from dotenv import load_dotenv
 from utils import counter
 # 修正：補上 SCENARIO_B_TOKEN_THRESHOLD 的 import
-from config import SCENARIO_B_TOKEN_THRESHOLD, MODEL_NAME
+from config import TOKEN_THRESHOLD, MODEL_NAME
 from utils.logger import log_event # 加上這行導入
 
 load_dotenv()
@@ -17,12 +17,12 @@ async def handle_chat(req):
     current_tokens = counter.estimate_tokens(history)
     
     # 使用 config 中的 Token 門檻
-    if current_tokens > SCENARIO_B_TOKEN_THRESHOLD:
+    if current_tokens > TOKEN_THRESHOLD:
         return {
             "reply": "",
             "history": history,
             "status": "warning",
-            "message": "系統記憶體已達上限，為了維持效能，輸入已暫停。",
+            "message": "⚠️ 此對話記憶體已達上限。為了確保 AI 回應品質，請點擊左側「新增對話」重新開始。",
             "debug": {
                 "tokens": current_tokens,
                 "rounds": len(history) // 2
@@ -43,6 +43,7 @@ async def handle_chat(req):
     # 在 return 前加入紀錄
     logger.log_event(
         subject_id=req.user_id,
+        chat_id=req.chat_id,
         scenario="B",
         trigger_type=req.trigger_type,
         user_input=req.message,

@@ -2,11 +2,11 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from core import scenario_a, scenario_b
+from core import scenario_a, scenario_b, scenario_c
 from utils import logger
 import os # 加上這行
 from typing import List, Optional
-from config import SCENARIO_A_ROUND_LIMIT, SCENARIO_B_TOKEN_THRESHOLD
+from config import SCENARIO_A_ROUND_LIMIT, TOKEN_THRESHOLD
 from dotenv import load_dotenv # 修正：補上 load_dotenv
 from groq import Groq
 from fastapi import FastAPI, HTTPException, File, UploadFile 
@@ -32,10 +32,17 @@ app.add_middleware(
 
 class ChatRequest(BaseModel):
     user_id: str
+    chat_id: str
     message: str
     history: list
     scenario: str  # "A" 代表隱性, "B" 代表顯性
     trigger_type: Optional[str] = "manual"
+
+class MigrationLog(BaseModel):
+    user_id: str
+    chat_id: str
+    migration_time: float
+    summary: str
 
 @app.get("/")
 async def root():
@@ -50,6 +57,8 @@ async def chat(req: ChatRequest):
     elif req.scenario == "B":
         # 執行顯性賦權邏輯：Token 警告 
         return await scenario_b.handle_chat(req)
+    elif req.scenario == "C": # 💡 路由到情境 C
+        return await scenario_c.handle_chat(req)
     else:
         raise HTTPException(status_code=400, detail="Invalid Scenario")
     
@@ -80,13 +89,19 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
 @app.get("/config")
 async def get_config():
-    # 更新：讓前端能拿到新的 VAD 參數
-    from config import SCENARIO_A_ROUND_LIMIT, SCENARIO_B_TOKEN_THRESHOLD, VAD_SILENCE_TIMEOUT_A, VAD_SILENCE_TIMEOUT_B, VAD_THRESHOLD, SCENARIO_B_SHOW_HINT
+    # 💡 修正處：確保導入的變數與 config.py 一致
+    from config import SCENARIO_A_ROUND_LIMIT, TOKEN_THRESHOLD, VAD_SILENCE_TIMEOUT_A, VAD_SILENCE_TIMEOUT_B, VAD_THRESHOLD, SCENARIO_B_SHOW_HINT
     return {
         "round_limit": SCENARIO_A_ROUND_LIMIT,
-        "token_threshold": SCENARIO_B_TOKEN_THRESHOLD,
+        "token_threshold": TOKEN_THRESHOLD,
         "vad_timeout_a": VAD_SILENCE_TIMEOUT_A,
         "vad_timeout_b": VAD_SILENCE_TIMEOUT_B,
         "vad_threshold": VAD_THRESHOLD,
         "show_hint_b": SCENARIO_B_SHOW_HINT
     }
+
+@app.post("/log_migration")
+async def log_migration(req: MigrationLog):
+    # 💡 紀錄遷移復原時間
+    logger.log_migration(req.user_id, req.chat_id, req.migration_time, req.summary)
+    return {"status": "Migration logged"}

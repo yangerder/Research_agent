@@ -11,12 +11,14 @@ export const sendChatMessage = async (
   userId: string, 
   message: string, 
   history: any[], 
-  scenario: 'A' | 'B',
-  trigger: string = "manual" // 新增預設參數，不影響舊有呼叫
+  scenario: 'A' | 'B'| 'C',
+  trigger: string = "manual", // 新增預設參數，不影響舊有呼叫
+  chatId: string
 ) => {
   try {
     const response = await axios.post(`${API_BASE}/chat`, {
       user_id: userId,
+      chat_id: chatId,
       message: message,
       history: history,
       scenario: scenario,
