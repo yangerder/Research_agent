@@ -1,0 +1,2 @@
+ conda activate ai-research
+ python .\run_project.py
