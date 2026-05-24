@@ -28,6 +28,8 @@ interface Chat {
   messages: Message[];
   summary?: string;
 }
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 export default function ChatPage() {
   const [chats, setChats] = useState<Chat[]>([]);
@@ -39,6 +41,9 @@ export default function ChatPage() {
   const [isLocked, setIsLocked] = useState(false);
   const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [scenario, setScenario] = useState<"A" | "B" | "C">("A");
+  const [participantId, setParticipantId] = useState("");
+  const [participantInput, setParticipantInput] = useState("");
+
 
   const [isRecording, setIsRecording] = useState(false);
   const [showHint, setShowHint] = useState(false);
@@ -72,10 +77,25 @@ export default function ChatPage() {
   const activeChat = chats.find((c) => c.id === activeChatId) || chats[0];
 
   useEffect(() => {
-    fetch("http://localhost:8000/config")
-      .then((res) => res.json())
+    const savedId = localStorage.getItem("participant_id");
+    if (savedId) {
+      setParticipantId(savedId);
+      setParticipantInput(savedId);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/config`)
+      .then((res) => {
+        if (!res.ok) {
+          throw new Error(`config status ${res.status}`);
+        }
+        return res.json();
+      })
       .then((data) => setConfig(data))
-      .catch((err) => console.error("無法取得實驗設定", err));
+      .catch((err) => {
+        console.warn("無法取得實驗設定，使用預設值", err);
+      });
   }, []);
 
   useEffect(() => {
@@ -143,11 +163,11 @@ export default function ChatPage() {
     setActiveChatId(newId);
 
     try {
-      await fetch("http://localhost:8000/log_migration", {
+      await fetch(`${API_BASE}/log_migration`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          user_id: "user_123",
+          user_id: participantId || "unknown",
           chat_id: activeChatId,
           migration_time: migrationTimeMs,
           summary: summaryText,
@@ -277,8 +297,35 @@ export default function ChatPage() {
     }
   };
 
+  const confirmParticipantId = () => {
+    const trimmed = participantInput.trim();
+
+    console.log("confirmParticipantId clicked:", trimmed);
+
+    if (!trimmed) {
+      setWarningMessage("請先輸入受測者編號");
+      return;
+    }
+
+    try {
+      localStorage.setItem("participant_id", trimmed);
+    } catch (err) {
+      console.warn("無法寫入 localStorage，但仍繼續實驗", err);
+    }
+
+    setParticipantId(trimmed);
+    setParticipantInput(trimmed);
+    setWarningMessage(null);
+  };
+
   const handleSend = async (customText?: string, trigger: string = "manual") => {
     const messageContent = customText || input;
+
+    if (!participantId) {
+      setWarningMessage("請先輸入受測者編號");
+      return;
+    }
+
     if (!messageContent.trim() || !activeChatId || isLoading || isLocked) return;
 
     const historyBeforeSend = activeChat?.messages || [];
@@ -313,7 +360,7 @@ export default function ChatPage() {
 
     try {
       const data = await sendChatMessage(
-        "user_123",
+        participantId,
         messageContent,
         historyBeforeSend,
         scenario,
@@ -374,6 +421,38 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans">
+      {!participantId && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8">
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              請輸入受測者編號
+            </h2>
+
+            <p className="text-sm text-gray-500 mb-6">
+              請輸入研究者提供的編號，例如 P001、P002。這個編號只會用來區分實驗資料。
+            </p>
+
+            <input
+              value={participantInput}
+              onChange={(e) => setParticipantInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") confirmParticipantId();
+              }}
+              placeholder="例如：P001"
+              className="w-full p-4 border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 mb-4"
+              autoFocus
+            />
+
+            <button
+              type="button"
+              onClick={confirmParticipantId}
+              className="w-full bg-blue-600 text-white py-3.5 rounded-2xl font-bold hover:bg-blue-700 active:scale-95 transition-all"
+            >
+              開始實驗
+            </button>
+          </div>
+        </div>
+      )}
       <div className="w-64 bg-[#171717] text-white flex flex-col border-r border-white/10">
         <div className="p-4 flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-lg font-bold">
@@ -460,8 +539,23 @@ export default function ChatPage() {
       </div>
 
       <div className="flex-1 flex flex-col bg-white">
-        <header className="h-14 border-b flex items-center px-6 bg-white/80 backdrop-blur-md sticky top-0 z-10 font-bold">
-          實驗介面 - 情境 {scenario}
+        <header className="h-14 border-b flex items-center justify-between px-6 bg-white/80 backdrop-blur-md sticky top-0 z-10 font-bold">
+          <span>實驗介面 - 情境 {scenario}</span>
+          <span className="text-xs text-gray-500 font-normal">
+            受測者：{participantId || "未設定"}
+            {participantId && (
+              <button
+                onClick={() => {
+                  localStorage.removeItem("participant_id");
+                  setParticipantId("");
+                  setParticipantInput("");
+                }}
+                className="ml-3 text-xs text-blue-600 hover:underline"
+              >
+                更換
+              </button>
+            )}
+          </span>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">

@@ -25,7 +25,8 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY")) # 這樣這行才不會報錯
 # 解決跨域問題，讓前端可以串接
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

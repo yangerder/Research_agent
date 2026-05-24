@@ -1,7 +1,8 @@
 import axios from 'axios';
 
 // 指向你啟動中的 FastAPI 後端
-const API_BASE = "http://localhost:8000";
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 /**
  * 送出聊天訊息
