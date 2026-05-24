@@ -22,10 +22,15 @@ async def handle_chat(req):
             summary_completion = client.chat.completions.create(
                 model=config.MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": "請用一句話摘要目前的對話重點，以便使用者開啟新對話。"},
+                    {
+                        "role": "system",
+                        "content": """
+                    請用一句話摘要目前的對話重點，以便使用者開啟新對話。
+                    """
+                    },
                     *summary_messages
                 ],
-                max_tokens=150
+                max_tokens=800
             )
             summary = summary_completion.choices[0].message.content
         except Exception as e:
@@ -60,10 +65,15 @@ async def handle_chat(req):
             summary_comp = client.chat.completions.create(
                 model=config.MODEL_NAME,
                 messages=[
-                    {"role": "system", "content": "請用 50 字以內的一句話，精確摘要目前的對話進度。"},
+                    {
+                        "role": "system",
+                        "content": """
+                    請用一句話摘要目前的對話重點，以便使用者開啟新對話。
+                    """
+                    },
                     *updated_history
                 ],
-                max_tokens=150,
+                max_tokens=800,
             )
             summary = summary_comp.choices[0].message.content
             status = "limit_approaching"
