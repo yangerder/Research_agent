@@ -4,7 +4,7 @@ from utils import logger
 from groq import Groq
 from dotenv import load_dotenv
 from utils import counter
-from config import SCENARIO_A_MSG_LIMIT, MODEL_NAME  
+from config import SCENARIO_A_MSG_LIMIT, MODEL_NAME, SYSTEM_PROMPT_ZH
 from utils.logger import log_event
 
 load_dotenv()
@@ -18,7 +18,11 @@ async def handle_chat(req):
     if len(history) > SCENARIO_A_MSG_LIMIT:
         history = history[-SCENARIO_A_MSG_LIMIT:]
     
-    messages = history + [{"role": "user", "content": req.message}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_ZH},
+        *history,
+        {"role": "user", "content": req.message}
+    ]
     
     # 修正：模型名稱改由 config 控制
     completion = client.chat.completions.create(
@@ -26,7 +30,12 @@ async def handle_chat(req):
         messages=messages
     )
     
-    updated_history = messages + [completion.choices[0].message.to_dict()]
+    ai_response = completion.choices[0].message.content
+
+    updated_history = history + [
+        {"role": "user", "content": req.message},
+        {"role": "assistant", "content": ai_response}
+    ]
 
     print(f"[DATA] Scenario A - Trigger: {trigger}, Rounds: {len(updated_history)//2}")
     
@@ -40,13 +49,13 @@ async def handle_chat(req):
         scenario="A",
         trigger_type=req.trigger_type,
         user_input=req.message,
-        ai_response=completion.choices[0].message.content,
+        ai_response=ai_response,
         tokens=current_tokens,
         rounds=current_rounds
     )
 
     return {
-        "reply": completion.choices[0].message.content,
+        "reply": ai_response,
         "history": updated_history,
         "status": "normal",
         "debug": {

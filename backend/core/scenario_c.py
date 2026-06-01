@@ -47,8 +47,12 @@ async def handle_chat(req):
 
     # 正常生成 AI 回覆
     completion = client.chat.completions.create(
-        model=config.MODEL_NAME, 
-        messages=req.history + [{"role": "user", "content": req.message}],
+        model=config.MODEL_NAME,
+        messages=[
+            {"role": "system", "content": config.SYSTEM_PROMPT_ZH},
+            *req.history,
+            {"role": "user", "content": req.message}
+        ],
         temperature=0.7
     )
     

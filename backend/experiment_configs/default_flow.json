@@ -1,0 +1,94 @@
+{
+  "assignment_mode": "fixed_demo",
+  "description": "Phase-driven demo flow. Edit this file to change the current experiment flow.",
+  "phases": [
+    {
+      "id": "intro",
+      "missionTitle": "實驗介紹",
+      "condition": null,
+      "conditionLabel": "說明",
+      "phaseLabel": "Intro",
+      "title": "實驗內容介紹",
+      "taskDocId": "intro",
+      "minRounds": 0,
+      "mode": "read_only"
+    },
+    {
+      "id": "text_travel_b_phase_a",
+      "missionTitle": "文字旅遊 Mission 1",
+      "condition": "B",
+      "conditionLabel": "情境 B：使用者自行切換新對話",
+      "phaseLabel": "Phase A",
+      "title": "初步行程討論",
+      "taskDocId": "text_travel_phase_a",
+      "minRounds": 6,
+      "mode": "text"
+    },
+    {
+      "id": "text_travel_b_phase_b",
+      "missionTitle": "文字旅遊 Mission 1",
+      "condition": "B",
+      "conditionLabel": "情境 B：使用者自行切換新對話",
+      "phaseLabel": "Phase B",
+      "title": "住宿區域比較",
+      "taskDocId": "text_travel_phase_b",
+      "minRounds": 4,
+      "mode": "text"
+    },
+    {
+      "id": "text_travel_b_phase_c",
+      "missionTitle": "文字旅遊 Mission 1",
+      "condition": "B",
+      "conditionLabel": "情境 B：使用者自行切換新對話",
+      "phaseLabel": "Phase C",
+      "title": "突發限制調整",
+      "taskDocId": "text_travel_phase_c",
+      "minRounds": 4,
+      "mode": "text"
+    },
+    {
+      "id": "text_travel_c_phase_a",
+      "missionTitle": "文字旅遊 Mission 2",
+      "condition": "C",
+      "conditionLabel": "情境 C：AI 摘要遷移",
+      "phaseLabel": "Phase A",
+      "title": "初步行程討論",
+      "taskDocId": "text_travel_phase_a",
+      "minRounds": 6,
+      "mode": "text"
+    },
+    {
+      "id": "text_travel_c_phase_b",
+      "missionTitle": "文字旅遊 Mission 2",
+      "condition": "C",
+      "conditionLabel": "情境 C：AI 摘要遷移",
+      "phaseLabel": "Phase B",
+      "title": "住宿區域比較",
+      "taskDocId": "text_travel_phase_b",
+      "minRounds": 4,
+      "mode": "text"
+    },
+    {
+      "id": "text_travel_c_phase_c",
+      "missionTitle": "文字旅遊 Mission 2",
+      "condition": "C",
+      "conditionLabel": "情境 C：AI 摘要遷移",
+      "phaseLabel": "Phase C",
+      "title": "突發限制調整",
+      "taskDocId": "text_travel_phase_c",
+      "minRounds": 4,
+      "mode": "text"
+    },
+    {
+      "id": "end",
+      "missionTitle": "實驗結束",
+      "condition": null,
+      "conditionLabel": "結束",
+      "phaseLabel": "End",
+      "title": "完成實驗",
+      "taskDocId": "end",
+      "minRounds": 0,
+      "mode": "read_only"
+    }
+  ]
+}

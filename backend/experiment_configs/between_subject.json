@@ -1,0 +1,95 @@
+{
+  "assignment_mode": "between_subject",
+  "description": "Each participant is assigned one text-travel condition and one voice-restaurant condition.",
+  "domains": {
+    "text_travel": {
+      "title": "文字旅遊",
+      "mode": "text",
+      "conditions": [
+        "A",
+        "B",
+        "C"
+      ],
+      "condition_labels": {
+        "A": "情境 A：隱性遺忘 / 舊對話消失",
+        "B": "情境 B：對話滿了，使用者自行開新對話",
+        "C": "情境 C：系統摘要後換新對話"
+      },
+      "max_per_condition": 20,
+      "phases": [
+        {
+          "phase": "1",
+          "phase_label": "Phase 1",
+          "title": "初始旅遊規劃",
+          "task_doc_id": "text_travel_phase_1",
+          "min_rounds": 6,
+          "mode": "text"
+        },
+        {
+          "phase": "2",
+          "phase_label": "Phase 2",
+          "title": "大量資訊整理任務",
+          "task_doc_id": "text_travel_phase_2",
+          "min_rounds": 4,
+          "mode": "text"
+        },
+        {
+          "phase": "3",
+          "phase_label": "Phase 3",
+          "title": "突發變更與重新規劃",
+          "task_doc_id": "text_travel_phase_3",
+          "min_rounds": 6,
+          "mode": "text"
+        }
+      ]
+    },
+    "voice_restaurant": {
+      "title": "餐廳語音",
+      "mode": "voice",
+      "conditions": [
+        "A",
+        "B"
+      ],
+      "condition_labels": {
+        "A": "情境 A：激進自動送出",
+        "B": "情境 B：使用者手動送出"
+      },
+      "max_per_condition": 20,
+      "phases": [
+        {
+          "phase": "1",
+          "phase_label": "Phase 1",
+          "title": "情境記憶階段",
+          "task_doc_id": "voice_restaurant_phase_1",
+          "min_rounds": 0,
+          "mode": "read_only",
+          "duration_seconds": 60
+        },
+        {
+          "phase": "2",
+          "phase_label": "Phase 2",
+          "title": "語音決策與討論",
+          "task_doc_id": "voice_restaurant_phase_2",
+          "min_rounds": 1,
+          "mode": "voice"
+        },
+        {
+          "phase": "3",
+          "phase_label": "Phase 3",
+          "title": "AI 回覆後修正與確認",
+          "task_doc_id": "voice_restaurant_phase_3",
+          "min_rounds": 1,
+          "mode": "voice"
+        }
+      ]
+    }
+  },
+  "flow_order": [
+    "intro",
+    "text_travel",
+    "text_questionnaire",
+    "voice_restaurant",
+    "voice_questionnaire",
+    "end"
+  ]
+}

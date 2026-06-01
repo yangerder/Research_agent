@@ -5,7 +5,7 @@ from groq import Groq
 from dotenv import load_dotenv
 from utils import counter
 # 修正：補上 SCENARIO_B_TOKEN_THRESHOLD 的 import
-from config import TOKEN_THRESHOLD, MODEL_NAME
+from config import TOKEN_THRESHOLD, MODEL_NAME, SYSTEM_PROMPT_ZH
 from utils.logger import log_event # 加上這行導入
 
 load_dotenv()
@@ -29,7 +29,11 @@ async def handle_chat(req):
             }
         }
     
-    messages = history + [{"role": "user", "content": req.message}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_ZH},
+        *history,
+        {"role": "user", "content": req.message}
+    ]
     
     # 修正：模型名稱改由 config 控制
     completion = client.chat.completions.create(
@@ -37,7 +41,12 @@ async def handle_chat(req):
         messages=messages
     )
     
-    updated_history = messages + [completion.choices[0].message.to_dict()]
+    ai_response = completion.choices[0].message.content
+
+    updated_history = history + [
+        {"role": "user", "content": req.message},
+        {"role": "assistant", "content": ai_response}
+    ]
     print(f"[DATA] Scenario B - Trigger: {trigger}")
 
     # 在 return 前加入紀錄
@@ -47,13 +56,13 @@ async def handle_chat(req):
         scenario="B",
         trigger_type=req.trigger_type,
         user_input=req.message,
-        ai_response=completion.choices[0].message.content,
+        ai_response=ai_response,
         tokens=counter.estimate_tokens(updated_history),
         rounds=len(updated_history) // 2
     )
 
     return {
-        "reply": completion.choices[0].message.content,
+        "reply": ai_response,
         "history": updated_history,
         "status": "normal",
         "debug": {
