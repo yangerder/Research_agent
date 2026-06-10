@@ -20,6 +20,10 @@ import {
 import {
   getTaskDoc,
   startExperiment,
+  saveParticipantState,
+  logConversationMessages,
+  logInteractionEvent,
+  logResetEvent,
   logMigration,
   logPhaseCompletion,
   sendChatMessage,
@@ -31,6 +35,8 @@ import {
 interface Message {
   role: "user" | "assistant";
   content: string;
+  phaseId?: string;
+  hidden?: boolean;
 }
 
 interface Chat {
@@ -54,6 +60,19 @@ interface ExperimentPhase {
   mode: "text" | "voice" | "read_only";
   durationSeconds?: number | null;
   status: "locked" | "active" | "completed";
+  startedAt?: string | null;
+  endedAt?: string | null;
+}
+
+interface ExperimentMissionRun {
+  id: string;
+  displayTitle: string;
+  internalTitle: string;
+  condition: Scenario | null;
+  conditionLabel: string;
+  status: "locked" | "active" | "completed";
+  phases: ExperimentPhase[];
+  activePhaseId: string | null;
   chats: Chat[];
   activeChatId: string | null;
   startedAt?: string | null;
@@ -74,11 +93,16 @@ interface FlowPhaseConfig {
 }
 
 const nowIso = () => new Date().toISOString();
-const makeId = (prefix: string) => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const makeId = (prefix: string) =>
+  `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const createDefaultChat = (phaseTitle: string): Chat => ({
   id: makeId("chat"),
-  title: phaseTitle.includes("住宿") ? "住宿比較" : "討論行程",
+  title: phaseTitle.includes("住宿")
+    ? "住宿比較"
+    : phaseTitle.includes("語音")
+      ? "語音討論"
+      : "討論行程",
   messages: [],
   createdAt: nowIso(),
 });
@@ -89,43 +113,43 @@ const fallbackFlow: FlowPhaseConfig[] = [
     missionTitle: "實驗介紹",
     condition: null,
     conditionLabel: "說明",
-    phaseLabel: "Intro",
+    phaseLabel: "Info",
     title: "實驗內容介紹",
     taskDocId: "intro",
     minRounds: 0,
     mode: "read_only",
   },
   {
-    id: "text_travel_b_phase_a",
-    missionTitle: "文字旅遊 Mission 1",
+    id: "text_travel_b_phase_1",
+    missionTitle: "文字旅遊",
     condition: "B",
     conditionLabel: "情境 B：使用者自行切換新對話",
-    phaseLabel: "Phase A",
-    title: "初步行程討論",
-    taskDocId: "text_travel_phase_a",
+    phaseLabel: "Phase 1",
+    title: "初始旅遊規劃",
+    taskDocId: "text_travel_phase_1",
     minRounds: 6,
     mode: "text",
   },
   {
-    id: "text_travel_b_phase_b",
-    missionTitle: "文字旅遊 Mission 1",
+    id: "text_travel_b_phase_2",
+    missionTitle: "文字旅遊",
     condition: "B",
     conditionLabel: "情境 B：使用者自行切換新對話",
-    phaseLabel: "Phase B",
-    title: "住宿區域比較",
-    taskDocId: "text_travel_phase_b",
+    phaseLabel: "Phase 2",
+    title: "大量資訊整理任務",
+    taskDocId: "text_travel_phase_2",
     minRounds: 4,
     mode: "text",
   },
   {
-    id: "text_travel_b_phase_c",
-    missionTitle: "文字旅遊 Mission 1",
+    id: "text_travel_b_phase_3",
+    missionTitle: "文字旅遊",
     condition: "B",
     conditionLabel: "情境 B：使用者自行切換新對話",
-    phaseLabel: "Phase C",
-    title: "突發限制調整",
-    taskDocId: "text_travel_phase_c",
-    minRounds: 4,
+    phaseLabel: "Phase 3",
+    title: "突發變更與重新規劃",
+    taskDocId: "text_travel_phase_3",
+    minRounds: 6,
     mode: "text",
   },
   {
@@ -144,11 +168,12 @@ const fallbackFlow: FlowPhaseConfig[] = [
 export default function ChatPage() {
   const [participantId, setParticipantId] = useState("");
   const [participantInput, setParticipantInput] = useState("");
-  const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>("between_subject");
+  const [assignmentMode, setAssignmentMode] =
+    useState<AssignmentMode>("between_subject");
   const [assignmentInfo, setAssignmentInfo] = useState<any>(null);
 
-  const [phases, setPhases] = useState<ExperimentPhase[]>([]);
-  const [activePhaseId, setActivePhaseId] = useState<string | null>(null);
+  const [missions, setMissions] = useState<ExperimentMissionRun[]>([]);
+  const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [taskDoc, setTaskDoc] = useState("載入任務文件中...");
 
@@ -168,8 +193,14 @@ export default function ChatPage() {
   const requestRef = useRef<number | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const isRecordingRef = useRef(false);
+  const recordingStartedAtRef = useRef<number | null>(null);
+  const lastInterruptionAtRef = useRef<number | null>(null);
+  const silenceHintLoggedRef = useRef(false);
+  const hasDetectedSpeechRef = useRef(false);
 
-  const [migrationStartTime, setMigrationStartTime] = useState<number | null>(null);
+  const [migrationStartTime, setMigrationStartTime] = useState<number | null>(
+    null,
+  );
   const [showDevPanel, setShowDevPanel] = useState(false);
   const [devPassword, setDevPassword] = useState("");
   const [isUnlocked, setIsUnlocked] = useState(false);
@@ -179,46 +210,76 @@ export default function ChatPage() {
     token_threshold: 300,
     vad_timeout_a: 1.0,
     vad_timeout_b: 2.0,
-    vad_threshold: 0.05,
+    vad_timeout_c: 2.0,
+    vad_threshold: 0.015,
     show_hint_b: true,
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const selectedPhase = useMemo(
-    () => phases.find((p) => p.id === activePhaseId) || phases[0],
-    [phases, activePhaseId]
+  const selectedMission = useMemo(
+    () => missions.find((m) => m.id === activeMissionId) || missions[0] || null,
+    [missions, activeMissionId],
   );
 
-  const currentActivePhase = useMemo(
-    () => phases.find((p) => p.status === "active") || null,
-    [phases]
+  const currentActiveMission = useMemo(
+    () => missions.find((m) => m.status === "active") || null,
+    [missions],
   );
+
+  const selectedPhase = useMemo(() => {
+    if (!selectedMission) return null;
+    return (
+      selectedMission.phases.find(
+        (p) => p.id === selectedMission.activePhaseId,
+      ) ||
+      selectedMission.phases[0] ||
+      null
+    );
+  }, [selectedMission]);
 
   const selectedChat = useMemo(() => {
-    if (!selectedPhase) return null;
-    return selectedPhase.chats.find((c) => c.id === activeChatId) || selectedPhase.chats[0] || null;
-  }, [selectedPhase, activeChatId]);
+    if (!selectedMission) return null;
+    return (
+      selectedMission.chats.find((c) => c.id === activeChatId) ||
+      selectedMission.chats[0] ||
+      null
+    );
+  }, [selectedMission, activeChatId]);
 
-  const currentCondition = selectedPhase?.condition || "A";
-  const phaseRounds = useMemo(() => countPhaseRounds(selectedPhase), [selectedPhase]);
-  const canCompletePhase = Boolean(selectedPhase && selectedPhase.status === "active" && phaseRounds >= selectedPhase.minRounds);
-  const isViewingCurrentPhase = selectedPhase && currentActivePhase && selectedPhase.id === currentActivePhase.id;
+  const currentCondition = selectedMission?.condition || "A";
+  const phaseRounds = useMemo(
+    () => countPhaseRounds(selectedPhase, selectedMission),
+    [selectedPhase, selectedMission],
+  );
+  const canCompletePhase = Boolean(
+    selectedMission &&
+    selectedPhase &&
+    selectedMission.status === "active" &&
+    phaseRounds >= selectedPhase.minRounds,
+  );
+  const isViewingCurrentMission =
+    selectedMission &&
+    currentActiveMission &&
+    selectedMission.id === currentActiveMission.id;
   const canInteract = Boolean(
     participantId &&
-      selectedPhase &&
-      selectedChat &&
-      selectedPhase.status === "active" &&
-      selectedPhase.mode !== "read_only" &&
-      isViewingCurrentPhase &&
-      !isLoading &&
-      !isTranscribing
+    selectedMission &&
+    selectedPhase &&
+    selectedChat &&
+    selectedMission.status === "active" &&
+    selectedPhase.mode !== "read_only" &&
+    isViewingCurrentMission &&
+    !isLoading &&
+    !isTranscribing,
   );
 
   useEffect(() => {
     try {
-      const savedMode = localStorage.getItem("assignment_mode") as AssignmentMode | null;
+      const savedMode = localStorage.getItem(
+        "assignment_mode",
+      ) as AssignmentMode | null;
       if (savedMode === "between_subject" || savedMode === "within_subject") {
         setAssignmentMode(savedMode);
       }
@@ -246,17 +307,34 @@ export default function ChatPage() {
       .then((data) => setTaskDoc(data.content))
       .catch((err) => {
         console.warn("無法取得任務文件，使用預設文字", err);
-        setTaskDoc("目前任務文件載入失敗，請通知研究者。你仍可依照右下角階段資訊進行任務。");
+        setTaskDoc(
+          "目前任務文件載入失敗，請通知研究者。你仍可依照右下角階段資訊進行任務。",
+        );
       });
   }, [selectedPhase?.taskDocId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [phases, activeChatId, isLoading, isTranscribing, loadingText]);
+  }, [missions, activeChatId, isLoading, isTranscribing, loadingText]);
+
+  useEffect(() => {
+    if (!participantId || missions.length === 0) return;
+
+    const timer = setTimeout(() => {
+      saveCurrentParticipantState().catch((err) => {
+        console.warn("participant state save failed", err);
+      });
+    }, 400);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantId, assignmentMode, activeMissionId, activeChatId, missions]);
 
   const fetchConfig = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000"}/config`);
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000"}/config`,
+      );
       if (!res.ok) throw new Error(`config status ${res.status}`);
       const data = await res.json();
       setConfig(data);
@@ -265,37 +343,107 @@ export default function ChatPage() {
     }
   };
 
-  const loadExperimentForParticipant = async (pid: string, mode: AssignmentMode = assignmentMode) => {
+  const loadExperimentForParticipant = async (
+    pid: string,
+    mode: AssignmentMode = assignmentMode,
+  ) => {
     try {
       const data = await startExperiment(pid, mode);
       setAssignmentInfo(data.assignment || data);
       setAssignmentMode(data.assignment_mode || mode);
-      initializePhases(data.phases || fallbackFlow);
+
+      if (data.saved_state?.missions?.length) {
+        restoreParticipantState(data.saved_state);
+      } else {
+        initializeMissions(data.phases || fallbackFlow);
+      }
     } catch (err) {
       console.warn("無法取得受測者實驗分配，使用前端 fallback flow", err);
       setAssignmentInfo({ assignment_mode: mode, fallback: true });
-      initializePhases(fallbackFlow);
+      initializeMissions(fallbackFlow);
     }
   };
 
-  const initializePhases = (flowPhases: FlowPhaseConfig[]) => {
-    const initialized: ExperimentPhase[] = flowPhases.map((phase, index) => {
-      const needsChat = phase.mode !== "read_only";
-      const initialChat = needsChat ? createDefaultChat(phase.title) : null;
-
-      return {
-        ...phase,
-        status: index === 0 ? "active" : "locked",
-        chats: initialChat ? [initialChat] : [],
-        activeChatId: initialChat?.id || null,
-        startedAt: index === 0 ? nowIso() : null,
-        endedAt: null,
-      };
-    });
-
-    setPhases(initialized);
-    setActivePhaseId(initialized[0]?.id || null);
+  const initializeMissions = (flowPhases: FlowPhaseConfig[]) => {
+    const initialized = buildMissionRuns(flowPhases);
+    setMissions(initialized);
+    setActiveMissionId(initialized[0]?.id || null);
     setActiveChatId(initialized[0]?.activeChatId || null);
+  };
+
+  const restoreParticipantState = (savedState: any) => {
+    const restoredMissions = Array.isArray(savedState.missions)
+      ? savedState.missions
+      : [];
+    setMissions(restoredMissions);
+    setActiveMissionId(
+      savedState.active_mission_id ||
+        restoredMissions.find(
+          (m: ExperimentMissionRun) => m.status === "active",
+        )?.id ||
+        restoredMissions[0]?.id ||
+        null,
+    );
+    setActiveChatId(
+      savedState.active_chat_id ||
+        restoredMissions.find(
+          (m: ExperimentMissionRun) => m.status === "active",
+        )?.activeChatId ||
+        restoredMissions[0]?.activeChatId ||
+        null,
+    );
+  };
+
+  const saveCurrentParticipantState = async () => {
+    if (!participantId || missions.length === 0) return;
+
+    await saveParticipantState({
+      participant_id: participantId,
+      assignment_mode: assignmentMode,
+      assignment: assignmentInfo,
+      active_mission_id: activeMissionId,
+      active_chat_id: activeChatId,
+      missions,
+    });
+  };
+
+  const trackInteractionEvent = async (
+    eventType: string,
+    extra: Record<string, any> = {},
+  ) => {
+    if (!participantId) return;
+
+    try {
+      await logInteractionEvent({
+        participant_id: participantId,
+        assignment_mode: assignmentMode,
+        event_type: eventType,
+        mission_id: selectedMission?.id || null,
+        mission_title: selectedMission?.displayTitle || null,
+        phase_id: selectedPhase?.id || null,
+        phase_label: selectedPhase?.phaseLabel || null,
+        chat_id: selectedChat?.id || null,
+        condition: selectedMission?.condition || null,
+        event_time_client: nowIso(),
+        ...extra,
+      });
+    } catch (err) {
+      console.warn(`interaction event log failed: ${eventType}`, err);
+    }
+  };
+
+  const markResumeAfterInterruption = async (
+    eventType = "resume_after_interruption",
+  ) => {
+    if (!lastInterruptionAtRef.current) return;
+
+    const recoveryTimeMs = Date.now() - lastInterruptionAtRef.current;
+    lastInterruptionAtRef.current = null;
+
+    await trackInteractionEvent(eventType, {
+      trigger_type: "manual",
+      recovery_time_ms: recoveryTimeMs,
+    });
   };
 
   const autoResizeTextarea = () => {
@@ -332,67 +480,79 @@ export default function ChatPage() {
     await loadExperimentForParticipant(trimmed, assignmentMode);
   };
 
-  const selectPhaseChat = (phaseId: string, chatId: string | null) => {
-    const phase = phases.find((p) => p.id === phaseId);
-    setActivePhaseId(phaseId);
-    setActiveChatId(chatId || phase?.activeChatId || phase?.chats[0]?.id || null);
+  const selectMissionChat = (missionId: string, chatId: string | null) => {
+    const mission = missions.find((m) => m.id === missionId);
+    setActiveMissionId(missionId);
+    setActiveChatId(
+      chatId || mission?.activeChatId || mission?.chats[0]?.id || null,
+    );
     setWarningMessage(null);
   };
 
-  const goToCurrentActivePhase = () => {
-    if (!currentActivePhase) return;
-    setActivePhaseId(currentActivePhase.id);
-    setActiveChatId(currentActivePhase.activeChatId || currentActivePhase.chats[0]?.id || null);
+  const goToCurrentActiveMission = () => {
+    if (!currentActiveMission) return;
+    setActiveMissionId(currentActiveMission.id);
+    setActiveChatId(
+      currentActiveMission.activeChatId ||
+        currentActiveMission.chats[0]?.id ||
+        null,
+    );
   };
 
   const createNewChat = () => {
-    if (!currentActivePhase) return;
+    if (!currentActiveMission) return;
 
-    if (!selectedPhase || selectedPhase.id !== currentActivePhase.id || selectedPhase.status !== "active") {
-      setWarningMessage("只能在目前進行中的階段新增對話");
-      goToCurrentActivePhase();
+    if (
+      !selectedMission ||
+      selectedMission.id !== currentActiveMission.id ||
+      selectedMission.status !== "active"
+    ) {
+      setWarningMessage("只能在目前進行中的任務新增對話");
+      goToCurrentActiveMission();
       return;
     }
 
-    if (selectedPhase.mode === "read_only") {
+    if (!selectedPhase || selectedPhase.mode === "read_only") {
       setWarningMessage("目前階段不需要新增對話");
       return;
     }
 
     const newChat: Chat = {
       id: makeId("chat"),
-      title: `新對話 ${selectedPhase.chats.length + 1}`,
+      title: `新對話 ${selectedMission.chats.length + 1}`,
       messages: [],
       createdAt: nowIso(),
     };
 
-    setPhases((prev) =>
-      prev.map((phase) =>
-        phase.id === selectedPhase.id
+    setMissions((prev) =>
+      prev.map((mission) =>
+        mission.id === selectedMission.id
           ? {
-              ...phase,
-              chats: [newChat, ...phase.chats],
+              ...mission,
+              chats: [newChat, ...mission.chats],
               activeChatId: newChat.id,
             }
-          : phase
-      )
+          : mission,
+      ),
     );
     setActiveChatId(newChat.id);
     setWarningMessage(null);
   };
 
   const updateSelectedChat = (updater: (chat: Chat) => Chat) => {
-    if (!selectedPhase || !selectedChat) return;
+    if (!selectedMission || !selectedChat) return;
 
-    setPhases((prev) =>
-      prev.map((phase) =>
-        phase.id === selectedPhase.id
+    setMissions((prev) =>
+      prev.map((mission) =>
+        mission.id === selectedMission.id
           ? {
-              ...phase,
-              chats: phase.chats.map((chat) => (chat.id === selectedChat.id ? updater(chat) : chat)),
+              ...mission,
+              chats: mission.chats.map((chat) =>
+                chat.id === selectedChat.id ? updater(chat) : chat,
+              ),
             }
-          : phase
-      )
+          : mission,
+      ),
     );
   };
 
@@ -417,24 +577,64 @@ export default function ChatPage() {
       const rms = Math.sqrt(sum / dataArray.length);
       setVolume(rms);
 
-      const timeout = currentCondition === "A" ? config.vad_timeout_a : config.vad_timeout_b;
+      const now = Date.now();
+      const recordingElapsedMs = recordingStartedAtRef.current
+        ? now - recordingStartedAtRef.current
+        : 0;
+      const rawVadThreshold = Number(config.vad_threshold);
+      const normalizedVadThreshold =
+        Number.isFinite(rawVadThreshold) && rawVadThreshold > 1
+          ? rawVadThreshold / 1000
+          : rawVadThreshold;
+      const effectiveVadThreshold =
+        Number.isFinite(normalizedVadThreshold) && normalizedVadThreshold > 0
+          ? normalizedVadThreshold
+          : 0.015;
+      const effectiveTimeout =
+        currentCondition === "A"
+          ? config.vad_timeout_a
+          : currentCondition === "C"
+            ? config.vad_timeout_c
+            : config.vad_timeout_b;
 
-      if (rms < config.vad_threshold) {
-        if (!silenceStartRef.current) silenceStartRef.current = Date.now();
+      if (rms >= effectiveVadThreshold) {
+        hasDetectedSpeechRef.current = true;
+        silenceStartRef.current = null;
+        setShowHint(false);
+      } else if (hasDetectedSpeechRef.current) {
+        if (!silenceStartRef.current) silenceStartRef.current = now;
 
-        if ((Date.now() - silenceStartRef.current) / 1000 > timeout) {
+        if ((now - silenceStartRef.current) / 1000 > effectiveTimeout) {
           if (currentCondition === "A") {
+            // Condition A: after real speech is detected, auto-submit only after
+            // the configured silence timeout in backend/config.py.
             stopRecording(true);
             return;
           }
 
+          // Condition B/C: do not auto-submit; show/log the hint once per recording.
           if (config.show_hint_b && !showHint) {
             setShowHint(true);
           }
+
+          if (!silenceHintLoggedRef.current) {
+            silenceHintLoggedRef.current = true;
+            void trackInteractionEvent("vad_silence_hint", {
+              trigger_type: "hint",
+              silence_duration_ms: silenceStartRef.current
+                ? now - silenceStartRef.current
+                : null,
+              details: {
+                vad_threshold: effectiveVadThreshold,
+                vad_timeout_seconds: effectiveTimeout,
+                recording_elapsed_ms: recordingElapsedMs,
+              },
+            });
+          }
         }
       } else {
+        // Initial silence before any speech should not count as the user finishing.
         silenceStartRef.current = null;
-        setShowHint(false);
       }
 
       requestRef.current = requestAnimationFrame(checkVolume);
@@ -453,6 +653,14 @@ export default function ChatPage() {
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
       silenceStartRef.current = null;
+      silenceHintLoggedRef.current = false;
+      hasDetectedSpeechRef.current = false;
+      setShowHint(false);
+      recordingStartedAtRef.current = Date.now();
+      await markResumeAfterInterruption("recording_start_after_interruption");
+      void trackInteractionEvent("recording_start", {
+        trigger_type: "manual",
+      });
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
@@ -460,15 +668,34 @@ export default function ChatPage() {
 
       mediaRecorder.onstop = async () => {
         const isAuto = silenceStartRef.current !== null;
+        const recordingDurationMs = recordingStartedAtRef.current
+          ? Date.now() - recordingStartedAtRef.current
+          : null;
 
         try {
           setIsTranscribing(true);
           setLoadingText("正在轉換語音");
 
-          const text = await transcribeAudio(new Blob(chunksRef.current, { type: "audio/webm" }));
+          const text = await transcribeAudio(
+            new Blob(chunksRef.current, { type: "audio/webm" }),
+          );
+
+          void trackInteractionEvent(
+            isAuto ? "auto_vad_transcribed" : "manual_recording_transcribed",
+            {
+              trigger_type: isAuto ? "auto_vad" : "manual",
+              recording_duration_ms: recordingDurationMs,
+              text_length: text?.trim()?.length || 0,
+            },
+          );
 
           if (text?.trim()) {
             await handleSend(text, isAuto ? "auto_vad" : "manual");
+          } else if (isAuto) {
+            void trackInteractionEvent("auto_vad_empty_transcription", {
+              trigger_type: "auto_vad",
+              recording_duration_ms: recordingDurationMs,
+            });
           }
         } catch (err) {
           console.error("語音轉文字失敗", err);
@@ -476,6 +703,7 @@ export default function ChatPage() {
         } finally {
           setIsTranscribing(false);
           setLoadingText("AI 正在回覆中");
+          recordingStartedAtRef.current = null;
           stream.getTracks().forEach((t) => t.stop());
         }
       };
@@ -491,8 +719,35 @@ export default function ChatPage() {
 
   const stopRecording = (isAuto = false) => {
     if (mediaRecorderRef.current && isRecordingRef.current) {
+      const stoppedAt = Date.now();
+      const recordingDurationMs = recordingStartedAtRef.current
+        ? stoppedAt - recordingStartedAtRef.current
+        : null;
+      const silenceDurationMs = silenceStartRef.current
+        ? stoppedAt - silenceStartRef.current
+        : null;
+
       isRecordingRef.current = false;
       setIsRecording(false);
+
+      if (isAuto) {
+        lastInterruptionAtRef.current = stoppedAt;
+        void trackInteractionEvent("auto_vad_stop", {
+          trigger_type: "auto_vad",
+          recording_duration_ms: recordingDurationMs,
+          silence_duration_ms: silenceDurationMs,
+          details: {
+            note: "VAD stopped recording automatically after silence threshold.",
+          },
+        });
+      } else {
+        void trackInteractionEvent("manual_stop_recording", {
+          trigger_type: "manual",
+          recording_duration_ms: recordingDurationMs,
+          silence_duration_ms: silenceDurationMs,
+        });
+      }
+
       mediaRecorderRef.current.stop();
 
       if (requestRef.current) cancelAnimationFrame(requestRef.current);
@@ -509,18 +764,40 @@ export default function ChatPage() {
       return;
     }
 
-    if (!selectedPhase || !selectedChat || !selectedPhase.condition) {
+    if (
+      !selectedMission ||
+      !selectedPhase ||
+      !selectedChat ||
+      !selectedMission.condition
+    ) {
       setWarningMessage("目前階段不能送出訊息");
       return;
     }
 
     if (!canInteract || !messageContent.trim()) return;
 
-    const historyBeforeSend = selectedChat.messages;
+    if (trigger === "manual") {
+      await markResumeAfterInterruption("manual_message_after_interruption");
+    }
+
+    void trackInteractionEvent(
+      trigger === "auto_vad" ? "auto_vad_message_send" : "manual_message_send",
+      {
+        trigger_type: trigger,
+        text_length: messageContent.trim().length,
+      },
+    );
+
+    const historyBeforeSend = selectedChat.messages
+      .filter((msg) => !msg.hidden)
+      .map(({ role, content }) => ({ role, content }));
 
     updateSelectedChat((chat) => ({
       ...chat,
-      messages: [...chat.messages, { role: "user", content: messageContent }],
+      messages: [
+        ...chat.messages,
+        { role: "user", content: messageContent, phaseId: selectedPhase.id },
+      ],
     }));
 
     if (!customText) {
@@ -534,7 +811,7 @@ export default function ChatPage() {
 
     let summaryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    if (selectedPhase.condition === "C") {
+    if (selectedMission.condition === "C") {
       summaryTimer = setTimeout(() => {
         setLoadingText("正在檢查記憶上限，可能正在生成摘要");
       }, 2500);
@@ -545,10 +822,10 @@ export default function ChatPage() {
         participantId,
         messageContent,
         historyBeforeSend,
-        selectedPhase.condition,
+        selectedMission.condition,
         trigger,
         selectedChat.id,
-        selectedPhase.id
+        selectedPhase.id,
       );
 
       if (data.status === "warning") {
@@ -559,25 +836,93 @@ export default function ChatPage() {
           summary: data.summary || chat.summary,
         }));
 
-        if (data.summary && selectedPhase.condition === "C" && !migrationStartTime) {
+        if (
+          data.summary &&
+          selectedMission.condition === "C" &&
+          !migrationStartTime
+        ) {
           setMigrationStartTime(Date.now());
         }
       } else {
         updateSelectedChat((chat) => ({
           ...chat,
-          messages: data.history,
+          messages:
+            selectedMission.condition === "A"
+              ? applyConditionAResponse(chat, data.history || [], selectedPhase.id, config.round_limit)
+              : appendLatestAssistantToChat(chat, data.history || [], selectedPhase.id),
           summary: data.summary || chat.summary,
         }));
 
-        if (data.summary && selectedPhase.condition === "C" && !migrationStartTime) {
+        if (
+          data.summary &&
+          selectedMission.condition === "C" &&
+          !migrationStartTime
+        ) {
           setMigrationStartTime(Date.now());
         }
       }
 
       if (data.debug) setDebugData(data.debug);
+
+      const returnedHistory = Array.isArray(data.history) ? data.history : [];
+      let messagesToLog: { message_index: number; role: "user" | "assistant"; content: string }[] = [];
+
+      if (selectedMission.condition === "A") {
+        const lastAssistant = [...returnedHistory]
+          .reverse()
+          .find((msg) => msg?.role === "assistant" && msg?.content);
+
+        messagesToLog = [
+          {
+            message_index: selectedChat.messages.length,
+            role: "user",
+            content: messageContent,
+          },
+        ];
+
+        if (lastAssistant?.content) {
+          messagesToLog.push({
+            message_index: selectedChat.messages.length + 1,
+            role: "assistant",
+            content: lastAssistant.content,
+          });
+        }
+      } else {
+        const newReturnedMessages = returnedHistory.slice(historyBeforeSend.length);
+        messagesToLog = newReturnedMessages.map((msg: Message, offset: number) => ({
+          message_index: historyBeforeSend.length + offset,
+          role: msg.role,
+          content: msg.content,
+        }));
+
+        if (messagesToLog.length === 0) {
+          messagesToLog = [
+            {
+              message_index: historyBeforeSend.length,
+              role: "user",
+              content: messageContent,
+            },
+          ];
+        }
+      }
+
+      await logConversationMessages({
+        participant_id: participantId,
+        assignment_mode: assignmentMode,
+        mission_id: selectedMission.id,
+        mission_title: selectedMission.displayTitle,
+        phase_id: selectedPhase.id,
+        phase_label: selectedPhase.phaseLabel,
+        chat_id: selectedChat.id,
+        condition: selectedMission.condition,
+        trigger_type: trigger,
+        messages: messagesToLog,
+      });
     } catch (err) {
       console.error(err);
-      setWarningMessage("系統暫時無法回應，可能是請求過長、API 限制或後端錯誤，請稍後再試。");
+      setWarningMessage(
+        "系統暫時無法回應，可能是請求過長、API 限制或後端錯誤，請稍後再試。",
+      );
     } finally {
       if (summaryTimer) clearTimeout(summaryTimer);
       setIsLoading(false);
@@ -587,33 +932,42 @@ export default function ChatPage() {
   };
 
   const handleMigration = async (summaryText: string) => {
-    if (!selectedPhase || !selectedChat || selectedPhase.status !== "active") return;
+    if (
+      !selectedMission ||
+      !selectedPhase ||
+      !selectedChat ||
+      selectedMission.status !== "active"
+    )
+      return;
 
     const clickTime = Date.now();
-    const migrationTimeMs = migrationStartTime ? clickTime - migrationStartTime : 0;
+    const migrationTimeMs = migrationStartTime
+      ? clickTime - migrationStartTime
+      : 0;
 
     const newChat: Chat = {
       id: makeId("summary_chat"),
-      title: `摘要接續 ${selectedPhase.chats.length + 1}`,
+      title: `摘要接續 ${selectedMission.chats.length + 1}`,
       createdAt: nowIso(),
       messages: [
         {
           role: "assistant",
+          phaseId: selectedPhase.id,
           content: `🔔 這是我們先前討論的重點摘要：\n\n${summaryText}\n\n我們可以從這裡繼續接續討論。`,
         },
       ],
     };
 
-    setPhases((prev) =>
-      prev.map((phase) =>
-        phase.id === selectedPhase.id
+    setMissions((prev) =>
+      prev.map((mission) =>
+        mission.id === selectedMission.id
           ? {
-              ...phase,
-              chats: [newChat, ...phase.chats],
+              ...mission,
+              chats: [newChat, ...mission.chats],
               activeChatId: newChat.id,
             }
-          : phase
-      )
+          : mission,
+      ),
     );
     setActiveChatId(newChat.id);
 
@@ -624,17 +978,229 @@ export default function ChatPage() {
         migration_time: migrationTimeMs,
         summary: summaryText,
       });
+
+      await logConversationMessages({
+        participant_id: participantId || "unknown",
+        assignment_mode: assignmentMode,
+        mission_id: selectedMission.id,
+        mission_title: selectedMission.displayTitle,
+        phase_id: selectedPhase.id,
+        phase_label: selectedPhase.phaseLabel,
+        chat_id: newChat.id,
+        condition: selectedMission.condition,
+        trigger_type: "migration_summary",
+        messages: newChat.messages.map((msg, index) => ({
+          message_index: index,
+          role: msg.role,
+          content: msg.content,
+        })),
+      });
     } catch (err) {
       console.error(err);
     }
   };
 
+  const resetCurrentPhase = async () => {
+    if (!isUnlocked) {
+      setWarningMessage("只有管理員解鎖研究工具後才能重置");
+      return;
+    }
+    if (
+      !participantId ||
+      !selectedMission ||
+      !selectedPhase ||
+      selectedMission.status !== "active"
+    )
+      return;
+
+    const confirmed = window.confirm(
+      `確定要重置「${selectedMission.displayTitle} / ${selectedPhase.phaseLabel}」嗎？\n\n這會清除目前階段的所有對話內容，並重新開始此階段。此操作會被記錄。`,
+    );
+
+    if (!confirmed) return;
+
+    const reason =
+      window.prompt(
+        "請簡短填寫重置原因，例如：受測者做錯任務、操作失誤。",
+        "受測者做錯任務",
+      ) || "";
+
+    let removedMessageCount = 0;
+    const resetAt = nowIso();
+    const newChat = createDefaultChat(selectedPhase.title);
+
+    const nextMissions = missions.map((mission) => {
+      if (mission.id !== selectedMission.id) return mission;
+
+      const preservedChats = mission.chats
+        .map((chat) => {
+          const removedFromChat = chat.messages.filter(
+            (msg) => msg.phaseId === selectedPhase.id,
+          ).length;
+          removedMessageCount += removedFromChat;
+          return {
+            ...chat,
+            messages: chat.messages.filter(
+              (msg) => msg.phaseId !== selectedPhase.id,
+            ),
+            summary: undefined,
+          };
+        })
+        .filter((chat) => chat.messages.length > 0);
+
+      return {
+        ...mission,
+        activeChatId: newChat.id,
+        chats: [newChat, ...preservedChats],
+        phases: mission.phases.map((phase) => {
+          if (phase.id === selectedPhase.id) {
+            return {
+              ...phase,
+              status: "active" as const,
+              startedAt: resetAt,
+              endedAt: null,
+            };
+          }
+          return phase;
+        }),
+      };
+    });
+
+    setMissions(nextMissions);
+    setActiveChatId(newChat.id);
+    setInput("");
+    resetTextareaHeight();
+    setMigrationStartTime(null);
+
+    try {
+      await logResetEvent({
+        participant_id: participantId,
+        reset_type: "phase",
+        mission_id: selectedMission.id,
+        mission_title: selectedMission.displayTitle,
+        phase_id: selectedPhase.id,
+        phase_label: selectedPhase.phaseLabel,
+        chat_count_removed: selectedMission.chats.length,
+        message_count_removed: removedMessageCount,
+        reason,
+        operator: "admin",
+      });
+
+      await saveParticipantState({
+        participant_id: participantId,
+        assignment_mode: assignmentMode,
+        assignment: assignmentInfo,
+        active_mission_id: selectedMission.id,
+        active_chat_id: newChat.id,
+        missions: nextMissions,
+      });
+    } catch (err) {
+      console.warn("reset log/state save failed", err);
+    }
+  };
+
+  const resetCurrentMission = async () => {
+    if (!isUnlocked) {
+      setWarningMessage("只有管理員解鎖研究工具後才能重置");
+      return;
+    }
+    if (
+      !participantId ||
+      !selectedMission ||
+      selectedMission.status !== "active"
+    )
+      return;
+
+    const confirmed = window.confirm(
+      `確定要重置整個「${selectedMission.displayTitle}」嗎？\n\n這會清除這個任務內所有 Phase 的對話內容，並從第一個 Phase 重新開始。此操作會被記錄。`,
+    );
+
+    if (!confirmed) return;
+
+    const reason =
+      window.prompt(
+        "請簡短填寫重置原因，例如：整個任務做錯、研究者要求重跑。",
+        "整個任務重跑",
+      ) || "";
+    const resetAt = nowIso();
+    const firstPhase = selectedMission.phases[0] || null;
+    const needsChat = firstPhase && firstPhase.mode !== "read_only";
+    const newChat =
+      needsChat && firstPhase ? createDefaultChat(firstPhase.title) : null;
+    const removedMessageCount = selectedMission.chats.reduce(
+      (total, chat) => total + chat.messages.length,
+      0,
+    );
+
+    const nextMissions = missions.map((mission) => {
+      if (mission.id !== selectedMission.id) return mission;
+
+      return {
+        ...mission,
+        status: "active" as const,
+        startedAt: resetAt,
+        endedAt: null,
+        activePhaseId: firstPhase?.id || null,
+        chats: newChat ? [newChat] : [],
+        activeChatId: newChat?.id || null,
+        phases: mission.phases.map((phase, index) => ({
+          ...phase,
+          status: index === 0 ? ("active" as const) : ("locked" as const),
+          startedAt: index === 0 ? resetAt : null,
+          endedAt: null,
+        })),
+      };
+    });
+
+    setMissions(nextMissions);
+    setActiveMissionId(selectedMission.id);
+    setActiveChatId(newChat?.id || null);
+    setInput("");
+    resetTextareaHeight();
+    setMigrationStartTime(null);
+
+    try {
+      await logResetEvent({
+        participant_id: participantId,
+        reset_type: "mission",
+        mission_id: selectedMission.id,
+        mission_title: selectedMission.displayTitle,
+        phase_id: firstPhase?.id || null,
+        phase_label: firstPhase?.phaseLabel || null,
+        chat_count_removed: selectedMission.chats.length,
+        message_count_removed: removedMessageCount,
+        reason,
+        operator: "admin",
+      });
+
+      await saveParticipantState({
+        participant_id: participantId,
+        assignment_mode: assignmentMode,
+        assignment: assignmentInfo,
+        active_mission_id: selectedMission.id,
+        active_chat_id: newChat?.id || null,
+        missions: nextMissions,
+      });
+    } catch (err) {
+      console.warn("mission reset log/state save failed", err);
+    }
+  };
+
   const completeCurrentPhase = async () => {
-    if (!selectedPhase || selectedPhase.status !== "active") return;
+    if (
+      !selectedMission ||
+      !selectedPhase ||
+      selectedMission.status !== "active"
+    )
+      return;
     if (phaseRounds < selectedPhase.minRounds) return;
 
-    const currentIndex = phases.findIndex((p) => p.id === selectedPhase.id);
-    const nextPhase = phases[currentIndex + 1];
+    const missionIndex = missions.findIndex((m) => m.id === selectedMission.id);
+    const phaseIndex = selectedMission.phases.findIndex(
+      (p) => p.id === selectedPhase.id,
+    );
+    const nextPhaseInMission = selectedMission.phases[phaseIndex + 1];
+    const nextMission = missions[missionIndex + 1];
     const endedAt = nowIso();
 
     try {
@@ -642,13 +1208,14 @@ export default function ChatPage() {
         await logPhaseCompletion({
           participant_id: participantId,
           phase_id: selectedPhase.id,
-          mission_title: selectedPhase.missionTitle,
-          condition: selectedPhase.condition,
+          mission_title: selectedMission.displayTitle,
+          condition: selectedMission.condition,
           phase_label: selectedPhase.phaseLabel,
           title: selectedPhase.title,
           round_count: phaseRounds,
-          chat_count: selectedPhase.chats.length,
-          started_at: selectedPhase.startedAt || null,
+          chat_count: selectedMission.chats.length,
+          started_at:
+            selectedPhase.startedAt || selectedMission.startedAt || null,
           ended_at: endedAt,
         });
       }
@@ -656,38 +1223,99 @@ export default function ChatPage() {
       console.warn("phase completion log failed", err);
     }
 
-    setPhases((prev) =>
-      prev.map((phase, index) => {
-        if (index === currentIndex) {
+    setMissions((prev) =>
+      prev.map((mission, index) => {
+        if (mission.id === selectedMission.id) {
+          if (nextPhaseInMission) {
+            const needsChat = nextPhaseInMission.mode !== "read_only";
+            const firstChat =
+              mission.chats.length > 0
+                ? null
+                : needsChat
+                  ? createDefaultChat(nextPhaseInMission.title)
+                  : null;
+            const chats =
+              mission.chats.length > 0
+                ? mission.chats
+                : firstChat
+                  ? [firstChat]
+                  : [];
+
+            return {
+              ...mission,
+              activePhaseId: nextPhaseInMission.id,
+              chats,
+              activeChatId: mission.activeChatId || chats[0]?.id || null,
+              phases: mission.phases.map((phase) => {
+                if (phase.id === selectedPhase.id)
+                  return { ...phase, status: "completed", endedAt };
+                if (phase.id === nextPhaseInMission.id)
+                  return { ...phase, status: "active", startedAt: nowIso() };
+                return phase;
+              }),
+            };
+          }
+
           return {
-            ...phase,
+            ...mission,
             status: "completed",
             endedAt,
-            chats: phase.chats.map((chat) => ({ ...chat, locked: true })),
+            chats: mission.chats.map((chat) => ({ ...chat, locked: true })),
+            phases: mission.phases.map((phase) =>
+              phase.id === selectedPhase.id
+                ? { ...phase, status: "completed", endedAt }
+                : phase,
+            ),
           };
         }
 
-        if (index === currentIndex + 1) {
-          const hasChat = phase.chats.length > 0;
-          const firstChat = hasChat ? phase.chats[0] : phase.mode !== "read_only" ? createDefaultChat(phase.title) : null;
+        if (!nextPhaseInMission && index === missionIndex + 1) {
+          const firstPhase = mission.phases[0] || null;
+          const needsChat = firstPhase && firstPhase.mode !== "read_only";
+          const firstChat =
+            mission.chats.length > 0
+              ? null
+              : needsChat
+                ? createDefaultChat(firstPhase.title)
+                : null;
+          const chats =
+            mission.chats.length > 0
+              ? mission.chats
+              : firstChat
+                ? [firstChat]
+                : [];
 
           return {
-            ...phase,
+            ...mission,
             status: "active",
             startedAt: nowIso(),
-            chats: hasChat ? phase.chats : firstChat ? [firstChat] : [],
-            activeChatId: hasChat ? phase.activeChatId || phase.chats[0]?.id || null : firstChat?.id || null,
+            activePhaseId: firstPhase?.id || null,
+            chats,
+            activeChatId: mission.activeChatId || chats[0]?.id || null,
+            phases: mission.phases.map((phase, phaseIdx) =>
+              phaseIdx === 0
+                ? { ...phase, status: "active", startedAt: nowIso() }
+                : phase,
+            ),
           };
         }
 
-        return phase;
-      })
+        return mission;
+      }),
     );
 
-    if (nextPhase) {
-      setActivePhaseId(nextPhase.id);
-      const nextChatId = nextPhase.activeChatId || nextPhase.chats[0]?.id || null;
-      setActiveChatId(nextChatId);
+    if (nextPhaseInMission) {
+      if (!selectedMission.activeChatId && selectedMission.chats[0]?.id) {
+        setActiveChatId(selectedMission.chats[0].id);
+      }
+      setMigrationStartTime(null);
+      setInput("");
+      resetTextareaHeight();
+    } else if (nextMission) {
+      setActiveMissionId(nextMission.id);
+      setActiveChatId(
+        nextMission.activeChatId || nextMission.chats[0]?.id || null,
+      );
       setMigrationStartTime(null);
       setInput("");
       resetTextareaHeight();
@@ -695,15 +1323,25 @@ export default function ChatPage() {
   };
 
   const showLoadingBubble = isLoading || isTranscribing;
-  const selectedPhaseStatusText = selectedPhase?.status === "completed" ? "已完成，只能查看" : selectedPhase?.status === "active" ? "進行中" : "尚未開始";
+  const selectedMissionStatusText =
+    selectedMission?.status === "completed"
+      ? "已完成，只能查看"
+      : selectedMission?.status === "active"
+        ? "進行中"
+        : "尚未開始";
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
       {!participantId && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8">
-            <h2 className="text-xl font-bold text-gray-900 mb-2">請輸入受測者編號</h2>
-            <p className="text-sm text-gray-500 mb-6">請輸入研究者提供的編號，例如 P001、P002。這個編號只會用來區分實驗資料。</p>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">
+              請輸入受測者編號
+            </h2>
+            <p className="text-sm text-gray-500 mb-6">
+              請輸入研究者提供的編號，例如
+              P001、P002。這個編號只會用來區分實驗資料。
+            </p>
 
             <input
               value={participantInput}
@@ -716,14 +1354,22 @@ export default function ChatPage() {
               autoFocus
             />
 
-            <label className="block text-xs font-bold text-gray-500 mb-2">實驗分配模式</label>
+            <label className="block text-xs font-bold text-gray-500 mb-2">
+              實驗分配模式
+            </label>
             <select
               value={assignmentMode}
-              onChange={(e) => setAssignmentMode(e.target.value as AssignmentMode)}
+              onChange={(e) =>
+                setAssignmentMode(e.target.value as AssignmentMode)
+              }
               className="w-full p-4 border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 mb-4 bg-white"
             >
-              <option value="between_subject">人多版：文字隨機 1 個情境，語音隨機 1 個情境</option>
-              <option value="within_subject">人少版：文字全部情境，語音全部情境，順序平衡</option>
+              <option value="between_subject">
+                人多版：文字任務 1 個，語音任務 1 個
+              </option>
+              <option value="within_subject">
+                人少版：文字任務 1/2/3，語音任務 1/2，順序平衡
+              </option>
             </select>
 
             <button
@@ -737,14 +1383,18 @@ export default function ChatPage() {
         </div>
       )}
 
-      <aside className="w-72 bg-[#171717] text-white flex flex-col border-r border-white/10">
+      <aside className="w-64 bg-[#171717] text-white flex flex-col border-r border-white/10">
         <div className="p-4 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-lg font-bold">L</div>
+          <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-lg font-bold">
+            L
+          </div>
           <button
             onClick={createNewChat}
             disabled={!canInteract}
             className={`flex-1 p-2 border rounded-lg transition text-sm flex items-center justify-center gap-2 ${
-              canInteract ? "border-white/20 hover:bg-white/10" : "border-white/10 text-gray-500 cursor-not-allowed"
+              canInteract
+                ? "border-white/20 hover:bg-white/10"
+                : "border-white/10 text-gray-500 cursor-not-allowed"
             }`}
           >
             <Plus size={18} /> 新增對話
@@ -752,49 +1402,80 @@ export default function ChatPage() {
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-3">
-          {phases.map((phase) => {
-            const isSelectedPhase = phase.id === selectedPhase?.id;
-            const isCurrent = phase.status === "active";
-            const rounds = countPhaseRounds(phase);
+          {missions.map((mission) => {
+            const isSelectedMission = mission.id === selectedMission?.id;
+            const activePhase =
+              mission.phases.find((p) => p.id === mission.activePhaseId) ||
+              mission.phases[0];
+            const rounds = countPhaseRounds(activePhase, mission);
 
             return (
-              <div key={phase.id} className="border border-white/10 rounded-xl overflow-hidden">
+              <div
+                key={mission.id}
+                className="border border-white/10 rounded-xl overflow-hidden"
+              >
                 <button
-                  onClick={() => selectPhaseChat(phase.id, phase.activeChatId || phase.chats[0]?.id || null)}
-                  className={`w-full text-left p-3 transition ${isSelectedPhase ? "bg-[#252525]" : "bg-[#111] hover:bg-[#202020]"}`}
+                  onClick={() =>
+                    selectMissionChat(
+                      mission.id,
+                      mission.activeChatId || mission.chats[0]?.id || null,
+                    )
+                  }
+                  className={`w-full text-left p-3 transition ${isSelectedMission ? "bg-[#252525]" : "bg-[#111] hover:bg-[#202020]"}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div>
-                      <div className="text-xs text-gray-400">{phase.missionTitle}</div>
-                      <div className="text-sm font-bold text-gray-100 mt-1">{phase.phaseLabel}：{phase.title}</div>
-                      <div className="text-[11px] text-gray-400 mt-1 truncate">{phase.conditionLabel}</div>
+                      <div className="text-sm font-bold text-gray-100 mt-1">
+                        {mission.displayTitle}
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-1 truncate">
+                        {mission.status === "completed"
+                          ? "已完成"
+                          : mission.status === "active"
+                            ? `${activePhase?.phaseLabel || ""}：${activePhase?.title || ""}`
+                            : "尚未開始"}
+                      </div>
                     </div>
-                    {phase.status === "completed" ? (
-                      <CheckCircle2 size={16} className="text-green-400 flex-shrink-0 mt-1" />
-                    ) : phase.status === "active" ? (
-                      <span className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded-full flex-shrink-0">進行中</span>
+                    {mission.status === "completed" ? (
+                      <CheckCircle2
+                        size={16}
+                        className="text-green-400 flex-shrink-0 mt-1"
+                      />
+                    ) : mission.status === "active" ? (
+                      <span className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded-full flex-shrink-0">
+                        進行中
+                      </span>
                     ) : (
-                      <Lock size={14} className="text-gray-500 flex-shrink-0 mt-1" />
+                      <Lock
+                        size={14}
+                        className="text-gray-500 flex-shrink-0 mt-1"
+                      />
                     )}
                   </div>
-                  {phase.minRounds > 0 && (
-                    <div className="text-[11px] text-gray-500 mt-2">輪數：{rounds}/{phase.minRounds}</div>
+                  {activePhase?.minRounds > 0 && (
+                    <div className="text-[11px] text-gray-500 mt-2">
+                      目前階段輪數：{rounds}/{activePhase.minRounds}
+                    </div>
                   )}
                 </button>
 
-                {phase.chats.length > 0 && (
+                {mission.chats.length > 0 && (
                   <div className="bg-black/30 py-1">
-                    {phase.chats.map((chat) => (
+                    {mission.chats.map((chat) => (
                       <button
                         key={chat.id}
-                        onClick={() => selectPhaseChat(phase.id, chat.id)}
+                        onClick={() => selectMissionChat(mission.id, chat.id)}
                         className={`w-full p-2 pl-5 text-left flex items-center gap-2 text-sm transition ${
-                          chat.id === selectedChat?.id ? "bg-blue-600/25 text-white" : "text-gray-300 hover:bg-white/5"
+                          chat.id === selectedChat?.id
+                            ? "bg-blue-600/25 text-white"
+                            : "text-gray-300 hover:bg-white/5"
                         }`}
                       >
                         <MessageSquare size={14} className="text-gray-500" />
                         <span className="truncate">{chat.title}</span>
-                        {chat.locked && <Lock size={12} className="ml-auto text-gray-500" />}
+                        {chat.locked && (
+                          <Lock size={12} className="ml-auto text-gray-500" />
+                        )}
                       </button>
                     ))}
                   </div>
@@ -807,7 +1488,9 @@ export default function ChatPage() {
         <div className="p-4 bg-[#0d0d0d] border-t border-white/10">
           <div className="flex items-center justify-between mb-3 text-gray-500">
             <span className="text-[10px] font-bold uppercase">研究工具</span>
-            <button onClick={() => setShowDevPanel(!showDevPanel)}>{showDevPanel ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+            <button onClick={() => setShowDevPanel(!showDevPanel)}>
+              {showDevPanel ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
           </div>
 
           {showDevPanel && (
@@ -832,12 +1515,52 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <>
-                  <div>分配模式: {assignmentInfo?.assignment_mode || assignmentMode}</div>
-                  <div>文字: {assignmentInfo?.text_order || assignmentInfo?.text_condition || "-"}</div>
-                  <div>語音: {assignmentInfo?.voice_order || assignmentInfo?.voice_condition || "-"}</div>
-                  <div>目前 Phase 輪數: {phaseRounds}/{selectedPhase?.minRounds || 0}</div>
-                  <div>Token: {debugData.tokens}/{config.token_threshold}</div>
+                  <div>
+                    分配模式:{" "}
+                    {assignmentInfo?.assignment_mode || assignmentMode}
+                  </div>
+                  <div>
+                    文字:{" "}
+                    {assignmentInfo?.text_order ||
+                      assignmentInfo?.text_condition ||
+                      "-"}
+                  </div>
+                  <div>
+                    語音:{" "}
+                    {assignmentInfo?.voice_order ||
+                      assignmentInfo?.voice_condition ||
+                      "-"}
+                  </div>
+                  <div>
+                    目前任務內部情境: {selectedMission?.condition || "-"}
+                  </div>
+                  <div>
+                    目前階段輪數: {phaseRounds}/{selectedPhase?.minRounds || 0}
+                  </div>
+                  <div>
+                    Token: {debugData.tokens}/{config.token_threshold}
+                  </div>
                   <div>音量: {volume.toFixed(4)}</div>
+                  <div>
+                    中斷恢復追蹤:{" "}
+                    {lastInterruptionAtRef.current ? "等待恢復" : "無"}
+                  </div>
+                  {selectedMission?.status === "active" && (
+                    <div className="pt-2 space-y-2">
+                      <button
+                        onClick={resetCurrentPhase}
+                        className="w-full rounded bg-red-600 px-2 py-1 text-white hover:bg-red-700"
+                      >
+                        管理員重置目前階段
+                      </button>
+                      <button
+                        onClick={resetCurrentMission}
+                        className="w-full rounded border border-red-500 px-2 py-1 text-red-300 hover:bg-red-950"
+                      >
+                        管理員重置整個任務
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -848,10 +1571,12 @@ export default function ChatPage() {
       <main className="flex-1 flex flex-col bg-white min-w-0">
         <header className="h-14 border-b flex items-center justify-between px-6 bg-white/80 backdrop-blur-md sticky top-0 z-10 font-bold">
           <div className="truncate">
-            {selectedPhase ? `${selectedPhase.missionTitle} - ${selectedPhase.phaseLabel}` : "實驗介面"}
+            {selectedMission && selectedPhase
+              ? `${selectedMission.displayTitle} - ${selectedPhase.phaseLabel}`
+              : "實驗介面"}
           </div>
           <span className="text-xs text-gray-500 font-normal flex items-center gap-2">
-受測者：{participantId || "未設定"}
+            受測者：{participantId || "未設定"}
             {participantId && (
               <button
                 onClick={() => {
@@ -859,7 +1584,7 @@ export default function ChatPage() {
                   setParticipantId("");
                   setParticipantInput("");
                   setAssignmentInfo(null);
-                  initializePhases(fallbackFlow);
+                  initializeMissions(fallbackFlow);
                 }}
                 className="text-blue-600 hover:underline"
               >
@@ -877,27 +1602,40 @@ export default function ChatPage() {
               </div>
             )}
 
-            {selectedChat?.messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`flex gap-4 max-w-[85%] ${m.role === "user" ? "flex-row-reverse" : ""}`}>
+            {selectedChat?.messages
+              .filter((m) => !m.hidden)
+              .map((m, i) => (
+                <div
+                  key={i}
+                  className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+                >
                   <div
-                    className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                      m.role === "user" ? "bg-blue-500" : "bg-emerald-600"
-                    } text-white shadow-sm`}
+                    className={`flex gap-4 max-w-[85%] ${m.role === "user" ? "flex-row-reverse" : ""}`}
                   >
-                    {m.role === "user" ? <User size={16} /> : <Bot size={16} />}
-                  </div>
+                    <div
+                      className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
+                        m.role === "user" ? "bg-blue-500" : "bg-emerald-600"
+                      } text-white shadow-sm`}
+                    >
+                      {m.role === "user" ? (
+                        <User size={16} />
+                      ) : (
+                        <Bot size={16} />
+                      )}
+                    </div>
 
-                  <div
-                    className={`p-4 rounded-2xl shadow-sm whitespace-pre-wrap break-words leading-relaxed ${
-                      m.role === "user" ? "bg-blue-600 text-white" : "bg-[#f4f4f4] text-gray-800"
-                    }`}
-                  >
-                    {m.content}
+                    <div
+                      className={`p-4 rounded-2xl shadow-sm whitespace-pre-wrap break-words leading-relaxed ${
+                        m.role === "user"
+                          ? "bg-blue-600 text-white"
+                          : "bg-[#f4f4f4] text-gray-800"
+                      }`}
+                    >
+                      {m.content}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
 
             {showLoadingBubble && (
               <div className="flex justify-start">
@@ -920,25 +1658,27 @@ export default function ChatPage() {
               </div>
             )}
 
-            {selectedChat?.summary && selectedPhase?.condition === "C" && selectedPhase.status === "active" && (
-              <div className="mx-auto max-w-xl my-8 p-6 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-100 rounded-3xl shadow-lg animate-in fade-in slide-in-from-bottom-4 duration-700">
-                <div className="flex items-center gap-2 mb-3 text-blue-800">
-                  <RefreshCcw size={18} className="animate-spin-slow" />
-                  <h3 className="font-bold">記憶遷移建議</h3>
+            {selectedChat?.summary &&
+              selectedMission?.condition === "C" &&
+              selectedMission.status === "active" && (
+                <div className="mx-auto max-w-xl my-8 p-6 bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-100 rounded-3xl shadow-lg animate-in fade-in slide-in-from-bottom-4 duration-700">
+                  <div className="flex items-center gap-2 mb-3 text-blue-800">
+                    <RefreshCcw size={18} className="animate-spin-slow" />
+                    <h3 className="font-bold">記憶遷移建議</h3>
+                  </div>
+
+                  <p className="text-sm text-blue-700 mb-5 leading-relaxed bg-white/50 p-3 rounded-xl border border-blue-50 whitespace-pre-wrap">
+                    {selectedChat.summary}
+                  </p>
+
+                  <button
+                    onClick={() => handleMigration(selectedChat.summary!)}
+                    className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700 shadow-md active:scale-95 transition-all"
+                  >
+                    帶著摘要開啟新對話
+                  </button>
                 </div>
-
-                <p className="text-sm text-blue-700 mb-5 leading-relaxed bg-white/50 p-3 rounded-xl border border-blue-50 whitespace-pre-wrap">
-                  {selectedChat.summary}
-                </p>
-
-                <button
-                  onClick={() => handleMigration(selectedChat.summary!)}
-                  className="w-full bg-blue-600 text-white py-3.5 rounded-xl font-bold hover:bg-blue-700 shadow-md active:scale-95 transition-all"
-                >
-                  帶著摘要開啟新對話
-                </button>
-              </div>
-            )}
+              )}
 
             <div ref={messagesEndRef} />
           </div>
@@ -949,7 +1689,9 @@ export default function ChatPage() {
             {warningMessage && (
               <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-red-50 text-red-700 text-xs py-3 px-6 rounded-2xl shadow-xl flex items-center gap-2 z-20 border border-red-200 animate-in fade-in zoom-in duration-300 max-w-[90%]">
                 <AlertCircle size={14} />
-                <span className="font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{warningMessage}</span>
+                <span className="font-semibold whitespace-nowrap overflow-hidden text-ellipsis">
+                  {warningMessage}
+                </span>
               </div>
             )}
 
@@ -959,12 +1701,19 @@ export default function ChatPage() {
               </div>
             )}
 
-            {selectedPhase && selectedPhase.status !== "active" && (
+            {selectedMission && selectedMission.status !== "active" && (
               <div className="mb-3 text-center text-sm text-gray-500 bg-gray-50 border rounded-2xl py-3">
-                此階段{selectedPhase.status === "completed" ? "已完成，只能查看紀錄" : "尚未開始"}。
-                {currentActivePhase && (
-                  <button onClick={goToCurrentActivePhase} className="ml-2 text-blue-600 hover:underline">
-                    回到目前進行中階段
+                此任務
+                {selectedMission.status === "completed"
+                  ? "已完成，只能查看紀錄"
+                  : "尚未開始"}
+                。
+                {currentActiveMission && (
+                  <button
+                    onClick={goToCurrentActiveMission}
+                    className="ml-2 text-blue-600 hover:underline"
+                  >
+                    回到目前進行中任務
                   </button>
                 )}
               </div>
@@ -986,9 +1735,15 @@ export default function ChatPage() {
                     handleSend();
                   }
                 }}
-                placeholder={canInteract ? "輸入訊息，Shift + Enter 換行" : "目前階段不能輸入"}
+                placeholder={
+                  canInteract
+                    ? "輸入訊息，Shift + Enter 換行"
+                    : "目前階段不能輸入"
+                }
                 className={`flex-1 resize-none max-h-[180px] min-h-[56px] overflow-y-auto p-4 border rounded-2xl outline-none focus:ring-2 focus:ring-blue-500/20 shadow-sm transition-all leading-relaxed ${
-                  canInteract ? "bg-white border-gray-200" : "bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500"
+                  canInteract
+                    ? "bg-white border-gray-200"
+                    : "bg-gray-100 border-gray-200 cursor-not-allowed text-gray-500"
                 }`}
                 disabled={!canInteract}
               />
@@ -997,7 +1752,9 @@ export default function ChatPage() {
                 onClick={() => handleSend()}
                 disabled={!canInteract || !input.trim()}
                 className={`p-4 rounded-2xl transition-all shadow-sm ${
-                  canInteract && input.trim() ? "bg-blue-600 text-white hover:bg-blue-700 active:scale-95" : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                  canInteract && input.trim()
+                    ? "bg-blue-600 text-white hover:bg-blue-700 active:scale-95"
+                    : "bg-gray-200 text-gray-400 cursor-not-allowed"
                 }`}
                 title="送出"
               >
@@ -1005,74 +1762,120 @@ export default function ChatPage() {
               </button>
 
               <button
-                onClick={() => (isRecording ? stopRecording(false) : startRecording())}
+                onClick={() =>
+                  isRecording ? stopRecording(false) : startRecording()
+                }
                 disabled={!canInteract}
                 className={`p-4 rounded-2xl transition-all shadow-sm ${
                   isRecording
                     ? "bg-red-500 text-white animate-pulse"
                     : canInteract
-                    ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
-                    : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                      ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                      : "bg-gray-200 text-gray-400 cursor-not-allowed"
                 }`}
                 title={isRecording ? "停止錄音" : "語音輸入"}
               >
-                {isRecording ? <Square size={22} fill="currentColor" /> : <Mic size={22} />}
+                {isRecording ? (
+                  <Square size={22} fill="currentColor" />
+                ) : (
+                  <Mic size={22} />
+                )}
               </button>
             </div>
 
-            <div className="mt-2 text-xs text-gray-400 text-center">Enter 送出，Shift + Enter 換行</div>
+            <div className="mt-2 text-xs text-gray-400 text-center">
+              Enter 送出，Shift + Enter 換行
+            </div>
           </div>
         </div>
       </main>
 
-      <aside className="w-[380px] bg-gray-50 border-l flex flex-col">
-        <div className="flex-1 overflow-y-auto p-5 border-b">
-          <div className="flex items-center gap-2 text-gray-800 font-bold mb-3">
-            <FileText size={18} /> 任務文件
+      <aside className="w-[520px] bg-gray-50 border-l flex flex-col">
+        <div className="flex-[3] overflow-y-auto p-6 border-b">
+          <div className="flex items-center gap-2 text-gray-800 font-bold mb-3 text-lg">
+            <FileText size={20} /> 任務文件
           </div>
-          <div className="text-xs text-gray-500 mb-4">
-            {selectedPhase ? `${selectedPhase.missionTitle} / ${selectedPhase.phaseLabel} / ${selectedPhase.title}` : "尚未載入"}
+          <div className="text-sm text-gray-500 mb-4">
+            {selectedMission && selectedPhase
+              ? `${selectedMission.displayTitle} / ${selectedPhase.phaseLabel} / ${selectedPhase.title}`
+              : "尚未載入"}
           </div>
-          <div className="bg-white border rounded-2xl p-4 text-sm leading-relaxed whitespace-pre-wrap text-gray-700 shadow-sm">
+          <div className="bg-white border rounded-2xl p-5 text-base leading-8 whitespace-pre-wrap text-gray-700 shadow-sm">
             {taskDoc}
           </div>
         </div>
 
-        <div className="p-5 bg-white">
+        <div className="flex-[1] p-5 bg-white overflow-y-auto">
           <h3 className="font-bold text-gray-900 mb-4">目前任務進度</h3>
 
-          {selectedPhase ? (
+          {selectedMission && selectedPhase ? (
             <div className="space-y-3 text-sm">
-              <InfoRow label="任務" value={selectedPhase.missionTitle} />
-              <InfoRow label="情境" value={selectedPhase.conditionLabel} />
-              <InfoRow label="階段" value={`${selectedPhase.phaseLabel}：${selectedPhase.title}`} />
-              <InfoRow label="狀態" value={selectedPhaseStatusText} />
-              <InfoRow label="完成條件" value={selectedPhase.minRounds > 0 ? `至少 ${selectedPhase.minRounds} 輪對話` : "閱讀完成即可繼續"} />
-              <InfoRow label="目前進度" value={`${phaseRounds} / ${selectedPhase.minRounds} 輪`} />
+              <InfoRow label="任務" value={selectedMission.displayTitle} />
+              <InfoRow
+                label="目前階段"
+                value={`${selectedPhase.phaseLabel}：${selectedPhase.title}`}
+              />
+              <InfoRow label="狀態" value={selectedMissionStatusText} />
+              <InfoRow
+                label="完成條件"
+                value={
+                  selectedPhase.minRounds > 0
+                    ? `至少 ${selectedPhase.minRounds} 輪對話`
+                    : "閱讀完成即可繼續"
+                }
+              />
+              <InfoRow
+                label="目前進度"
+                value={`${phaseRounds} / ${selectedPhase.minRounds} 輪`}
+              />
 
               <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                 <div
                   className="h-full bg-blue-600 transition-all"
-                  style={{ width: `${Math.min(100, selectedPhase.minRounds === 0 ? 100 : (phaseRounds / selectedPhase.minRounds) * 100)}%` }}
+                  style={{
+                    width: `${Math.min(100, selectedPhase.minRounds === 0 ? 100 : (phaseRounds / selectedPhase.minRounds) * 100)}%`,
+                  }}
                 />
               </div>
 
-              {selectedPhase.status === "active" ? (
+              {selectedMission.status === "active" ? (
+                <div className="space-y-2">
+                  {isUnlocked && selectedPhase.mode !== "read_only" && (
+                    <button
+                      onClick={resetCurrentPhase}
+                      className="w-full py-3 rounded-xl font-bold border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 active:scale-95 transition-all"
+                    >
+                      管理員：重置目前階段
+                    </button>
+                  )}
+                  {isUnlocked && selectedMission.phases.length > 1 && (
+                    <button
+                      onClick={resetCurrentMission}
+                      className="w-full py-3 rounded-xl font-bold border border-red-300 bg-white text-red-700 hover:bg-red-50 active:scale-95 transition-all"
+                    >
+                      管理員：重置整個任務
+                    </button>
+                  )}
+                  <button
+                    onClick={completeCurrentPhase}
+                    disabled={!canCompletePhase}
+                    className={`w-full py-3.5 rounded-xl font-bold transition-all ${
+                      canCompletePhase
+                        ? "bg-blue-600 text-white hover:bg-blue-700 active:scale-95"
+                        : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                    }`}
+                  >
+                    {canCompletePhase
+                      ? "完成此階段，進入下一階段"
+                      : "尚未完成最低輪數"}
+                  </button>
+                </div>
+              ) : currentActiveMission ? (
                 <button
-                  onClick={completeCurrentPhase}
-                  disabled={!canCompletePhase}
-                  className={`w-full py-3.5 rounded-xl font-bold transition-all ${
-                    canCompletePhase ? "bg-blue-600 text-white hover:bg-blue-700 active:scale-95" : "bg-gray-200 text-gray-400 cursor-not-allowed"
-                  }`}
-                >
-                  {canCompletePhase ? "完成此階段，進入下一階段" : "尚未完成最低輪數"}
-                </button>
-              ) : currentActivePhase ? (
-                <button
-                  onClick={goToCurrentActivePhase}
+                  onClick={goToCurrentActiveMission}
                   className="w-full py-3.5 rounded-xl font-bold bg-gray-900 text-white hover:bg-black active:scale-95 transition-all"
                 >
-                  返回目前進行中階段
+                  返回目前進行中任務
                 </button>
               ) : (
                 <div className="w-full py-3.5 rounded-xl font-bold bg-green-50 text-green-700 text-center border border-green-100">
@@ -1098,12 +1901,214 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function countPhaseRounds(phase?: ExperimentPhase | null) {
-  if (!phase) return 0;
+function countPhaseRounds(
+  phase?: ExperimentPhase | null,
+  mission?: ExperimentMissionRun | null,
+) {
+  if (!phase || !mission) return 0;
 
-  return phase.chats.reduce((total, chat) => {
-    const userCount = chat.messages.filter((m) => m.role === "user").length;
-    const assistantCount = chat.messages.filter((m) => m.role === "assistant").length;
+  return mission.chats.reduce((total, chat) => {
+    const userCount = chat.messages.filter(
+      (m) =>
+        m.role === "user" &&
+        (m.phaseId === phase.id || (!m.phaseId && mission.phases.length === 1)),
+    ).length;
+    const assistantCount = chat.messages.filter(
+      (m) =>
+        m.role === "assistant" &&
+        (m.phaseId === phase.id || (!m.phaseId && mission.phases.length === 1)),
+    ).length;
     return total + Math.min(userCount, assistantCount);
   }, 0);
+}
+
+function appendLatestAssistantToChat(
+  chat: Chat,
+  rawHistory: any[],
+  phaseId: string,
+): Message[] {
+  // For Condition B/C, the backend returns the full visible context plus the
+  // latest reply. Do not replace the whole chat with that returned history,
+  // because doing so would relabel old Phase 1 messages as Phase 2 messages
+  // and make progress jump from 0/4 to 7/4.
+  const nextMessages: Message[] = [...chat.messages];
+  const returned = Array.isArray(rawHistory) ? rawHistory : [];
+  const lastAssistant = [...returned]
+    .reverse()
+    .find((msg) => msg?.role === "assistant" && msg?.content);
+
+  if (!lastAssistant?.content) return nextMessages;
+
+  const alreadyLast =
+    nextMessages.length > 0 &&
+    nextMessages[nextMessages.length - 1].role === "assistant" &&
+    nextMessages[nextMessages.length - 1].content === lastAssistant.content &&
+    nextMessages[nextMessages.length - 1].phaseId === phaseId;
+
+  if (alreadyLast) return nextMessages;
+
+  return [
+    ...nextMessages,
+    {
+      role: "assistant",
+      content: lastAssistant.content,
+      phaseId,
+      hidden: false,
+    },
+  ];
+}
+
+function applyConditionAResponse(
+  chat: Chat,
+  rawHistory: any[],
+  phaseId: string,
+  roundLimit: number,
+): Message[] {
+  // Condition A simulates implicit context rolling based on backend/config.py:
+  // SCENARIO_A_ROUND_LIMIT = N and SCENARIO_A_MSG_LIMIT = N * 2.
+  //
+  // Important:
+  // 1. The rolling window is shared across Phase 1/2/3 inside the same task/chat.
+  //    It must NOT restart just because the participant moves to a new phase.
+  // 2. Example with roundLimit = 5:
+  //    Phase 1 has 6 rounds and Phase 2 has 4 rounds => keep the latest 5 rounds
+  //    overall: Phase 1's last round + Phase 2's four rounds.
+  // 3. Hidden messages stay in state/backend so each phase's progress still counts them.
+  // 4. Do not match returned messages by content; repeated test messages like "5"
+  //    would otherwise make the wrong turn visible.
+  const safeRoundLimit = Number.isFinite(roundLimit) && roundLimit > 0 ? roundLimit : 5;
+  const messageLimit = safeRoundLimit * 2;
+
+  const nextMessages: Message[] = chat.messages.map((msg) => ({
+    ...msg,
+    phaseId: msg.phaseId || phaseId,
+  }));
+
+  const returned = Array.isArray(rawHistory) ? rawHistory : [];
+  const lastAssistant = [...returned]
+    .reverse()
+    .find((msg) => msg?.role === "assistant" && msg?.content);
+
+  if (lastAssistant?.content) {
+    const alreadyLast =
+      nextMessages.length > 0 &&
+      nextMessages[nextMessages.length - 1].role === "assistant" &&
+      nextMessages[nextMessages.length - 1].content === lastAssistant.content &&
+      nextMessages[nextMessages.length - 1].phaseId === phaseId;
+
+    if (!alreadyLast) {
+      nextMessages.push({
+        role: "assistant",
+        content: lastAssistant.content,
+        phaseId,
+        hidden: false,
+      });
+    }
+  }
+
+  // Roll over the whole task/chat, not only the current phase. This keeps the
+  // token/context behavior consistent across Phase 1/2/3 in one task.
+  const taskMessageIndexes = nextMessages
+    .map((msg, index) => ({ msg, index }))
+    .filter(({ msg }) => msg.role === "user" || msg.role === "assistant");
+
+  const shouldRoll = taskMessageIndexes.length > messageLimit;
+  const visibleStartInTask = Math.max(0, taskMessageIndexes.length - messageLimit);
+
+  taskMessageIndexes.forEach(({ index }, orderInTask) => {
+    nextMessages[index] = {
+      ...nextMessages[index],
+      hidden: shouldRoll && orderInTask < visibleStartInTask,
+    };
+  });
+
+  return nextMessages;
+}
+
+function buildMissionRuns(
+  flowPhases: FlowPhaseConfig[],
+): ExperimentMissionRun[] {
+  const missions: ExperimentMissionRun[] = [];
+  const taskKeyToMissionId = new Map<string, string>();
+  let textTaskCount = 0;
+  let voiceTaskCount = 0;
+
+  for (const phase of flowPhases) {
+    const isInteractive = phase.mode !== "read_only";
+    const isTextTaskPhase = phase.taskDocId.startsWith("text_travel_phase_");
+    const isVoiceTaskPhase = phase.taskDocId.startsWith(
+      "voice_restaurant_phase_",
+    );
+    const isTaskPhase = isTextTaskPhase || isVoiceTaskPhase;
+
+    // Important: voice Phase 1 is read_only, but it is still part of the same
+    // voice task as Phase 2/3. Therefore task phases must be grouped by the
+    // backend run identity, not by whether the phase is interactive.
+    const key = isTaskPhase
+      ? `task|${phase.missionTitle}|${phase.condition || "none"}`
+      : `${phase.id}|read_only`;
+
+    let mission = taskKeyToMissionId.has(key)
+      ? missions.find((m) => m.id === taskKeyToMissionId.get(key)) || null
+      : null;
+
+    if (!mission) {
+      let displayTitle = phase.missionTitle;
+      if (phase.taskDocId === "text_questionnaire") {
+        displayTitle = `文字任務 ${Math.max(textTaskCount, 1)} 問卷`;
+      } else if (phase.taskDocId === "voice_questionnaire") {
+        displayTitle = `語音任務 ${Math.max(voiceTaskCount, 1)} 問卷`;
+      } else if (isTextTaskPhase) {
+        textTaskCount += 1;
+        displayTitle = `文字任務 ${textTaskCount}`;
+      } else if (isVoiceTaskPhase) {
+        voiceTaskCount += 1;
+        displayTitle = `語音任務 ${voiceTaskCount}`;
+      }
+
+      const initialChat = isInteractive ? createDefaultChat(phase.title) : null;
+      const missionId = makeId(isTaskPhase ? "mission" : "readonly");
+
+      mission = {
+        id: missionId,
+        displayTitle,
+        internalTitle: phase.missionTitle,
+        condition: phase.condition,
+        conditionLabel: phase.conditionLabel,
+        status: missions.length === 0 ? "active" : "locked",
+        phases: [],
+        activePhaseId: phase.id,
+        chats: initialChat ? [initialChat] : [],
+        activeChatId: initialChat?.id || null,
+        startedAt: missions.length === 0 ? nowIso() : null,
+        endedAt: null,
+      };
+
+      missions.push(mission);
+      taskKeyToMissionId.set(key, missionId);
+    }
+
+    // If a mission starts with a read-only phase, such as voice Phase 1, create
+    // the first chat when we later encounter the first interactive phase.
+    if (isInteractive && mission.chats.length === 0) {
+      const initialChat = createDefaultChat(phase.title);
+      mission.chats = [initialChat];
+      mission.activeChatId = initialChat.id;
+    }
+
+    mission.phases.push({
+      ...phase,
+      status:
+        mission.phases.length === 0 && mission.status === "active"
+          ? "active"
+          : "locked",
+      startedAt:
+        mission.phases.length === 0 && mission.status === "active"
+          ? nowIso()
+          : null,
+      endedAt: null,
+    });
+  }
+
+  return missions;
 }

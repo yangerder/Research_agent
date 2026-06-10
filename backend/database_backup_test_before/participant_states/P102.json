@@ -1,0 +1,557 @@
+{
+  "participant_id": "P102",
+  "assignment_mode": "within_subject",
+  "assignment": {
+    "created_at": "2026-06-10T16:00:43.098365",
+    "participant_id": "P102",
+    "assignment_mode": "within_subject",
+    "text_condition": "",
+    "voice_condition": "",
+    "text_order": "BCA",
+    "voice_order": "AB"
+  },
+  "active_mission_id": "readonly_1781078443110_l817ku",
+  "active_chat_id": null,
+  "missions": [
+    {
+      "id": "readonly_1781078443110_l817ku",
+      "displayTitle": "實驗介紹",
+      "internalTitle": "實驗介紹",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "active",
+      "phases": [
+        {
+          "id": "intro",
+          "missionTitle": "實驗介紹",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "實驗內容介紹",
+          "taskDocId": "intro",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "active",
+          "startedAt": "2026-06-10T08:00:43.110Z",
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "intro",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": "2026-06-10T08:00:43.110Z",
+      "endedAt": null
+    },
+    {
+      "id": "mission_1781078443110_4n1ub9",
+      "displayTitle": "文字任務 1",
+      "internalTitle": "文字旅遊",
+      "condition": "B",
+      "conditionLabel": "情境 B：對話滿了，使用者自行開新對話",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_travel_b_run1_phase_1",
+          "missionTitle": "文字旅遊",
+          "condition": "B",
+          "conditionLabel": "情境 B：對話滿了，使用者自行開新對話",
+          "phaseLabel": "Phase 1",
+          "title": "初始旅遊規劃",
+          "taskDocId": "text_travel_phase_1",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_b_run1_phase_2",
+          "missionTitle": "文字旅遊",
+          "condition": "B",
+          "conditionLabel": "情境 B：對話滿了，使用者自行開新對話",
+          "phaseLabel": "Phase 2",
+          "title": "大量資訊整理任務",
+          "taskDocId": "text_travel_phase_2",
+          "minRounds": 4,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_b_run1_phase_3",
+          "missionTitle": "文字旅遊",
+          "condition": "B",
+          "conditionLabel": "情境 B：對話滿了，使用者自行開新對話",
+          "phaseLabel": "Phase 3",
+          "title": "突發變更與重新規劃",
+          "taskDocId": "text_travel_phase_3",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_travel_b_run1_phase_1",
+      "chats": [
+        {
+          "id": "chat_1781078443110_4tcfyg",
+          "title": "討論行程",
+          "messages": [],
+          "createdAt": "2026-06-10T08:00:43.110Z"
+        }
+      ],
+      "activeChatId": "chat_1781078443110_4tcfyg",
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_03wy4d",
+      "displayTitle": "文字任務 1 問卷",
+      "internalTitle": "文字旅遊問卷",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_questionnaire_run1",
+          "missionTitle": "文字旅遊問卷",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "文字旅遊任務問卷",
+          "taskDocId": "text_questionnaire",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_questionnaire_run1",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "mission_1781078443110_v1jfeb",
+      "displayTitle": "文字任務 2",
+      "internalTitle": "文字旅遊 Mission 2",
+      "condition": "C",
+      "conditionLabel": "情境 C：系統摘要後換新對話",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_travel_c_run2_phase_1",
+          "missionTitle": "文字旅遊 Mission 2",
+          "condition": "C",
+          "conditionLabel": "情境 C：系統摘要後換新對話",
+          "phaseLabel": "Phase 1",
+          "title": "初始旅遊規劃",
+          "taskDocId": "text_travel_phase_1",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_c_run2_phase_2",
+          "missionTitle": "文字旅遊 Mission 2",
+          "condition": "C",
+          "conditionLabel": "情境 C：系統摘要後換新對話",
+          "phaseLabel": "Phase 2",
+          "title": "大量資訊整理任務",
+          "taskDocId": "text_travel_phase_2",
+          "minRounds": 4,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_c_run2_phase_3",
+          "missionTitle": "文字旅遊 Mission 2",
+          "condition": "C",
+          "conditionLabel": "情境 C：系統摘要後換新對話",
+          "phaseLabel": "Phase 3",
+          "title": "突發變更與重新規劃",
+          "taskDocId": "text_travel_phase_3",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_travel_c_run2_phase_1",
+      "chats": [
+        {
+          "id": "chat_1781078443110_mvpcvq",
+          "title": "討論行程",
+          "messages": [],
+          "createdAt": "2026-06-10T08:00:43.110Z"
+        }
+      ],
+      "activeChatId": "chat_1781078443110_mvpcvq",
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_suf6s7",
+      "displayTitle": "文字任務 2 問卷",
+      "internalTitle": "文字旅遊問卷",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_questionnaire_run2",
+          "missionTitle": "文字旅遊問卷",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "文字旅遊任務問卷",
+          "taskDocId": "text_questionnaire",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_questionnaire_run2",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "mission_1781078443110_2ink1m",
+      "displayTitle": "文字任務 3",
+      "internalTitle": "文字旅遊 Mission 3",
+      "condition": "A",
+      "conditionLabel": "情境 A：隱性遺忘 / 舊對話消失",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_travel_a_run3_phase_1",
+          "missionTitle": "文字旅遊 Mission 3",
+          "condition": "A",
+          "conditionLabel": "情境 A：隱性遺忘 / 舊對話消失",
+          "phaseLabel": "Phase 1",
+          "title": "初始旅遊規劃",
+          "taskDocId": "text_travel_phase_1",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_a_run3_phase_2",
+          "missionTitle": "文字旅遊 Mission 3",
+          "condition": "A",
+          "conditionLabel": "情境 A：隱性遺忘 / 舊對話消失",
+          "phaseLabel": "Phase 2",
+          "title": "大量資訊整理任務",
+          "taskDocId": "text_travel_phase_2",
+          "minRounds": 4,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "text_travel_a_run3_phase_3",
+          "missionTitle": "文字旅遊 Mission 3",
+          "condition": "A",
+          "conditionLabel": "情境 A：隱性遺忘 / 舊對話消失",
+          "phaseLabel": "Phase 3",
+          "title": "突發變更與重新規劃",
+          "taskDocId": "text_travel_phase_3",
+          "minRounds": 6,
+          "mode": "text",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_travel_a_run3_phase_1",
+      "chats": [
+        {
+          "id": "chat_1781078443110_icv4yz",
+          "title": "討論行程",
+          "messages": [],
+          "createdAt": "2026-06-10T08:00:43.110Z"
+        }
+      ],
+      "activeChatId": "chat_1781078443110_icv4yz",
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_4zeey7",
+      "displayTitle": "文字任務 3 問卷",
+      "internalTitle": "文字旅遊問卷",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "text_questionnaire_run3",
+          "missionTitle": "文字旅遊問卷",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "文字旅遊任務問卷",
+          "taskDocId": "text_questionnaire",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "text_questionnaire_run3",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "mission_1781078443110_oiyudw",
+      "displayTitle": "語音任務 1",
+      "internalTitle": "餐廳語音",
+      "condition": "A",
+      "conditionLabel": "情境 A：激進自動送出",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "voice_restaurant_a_run1_phase_1",
+          "missionTitle": "餐廳語音",
+          "condition": "A",
+          "conditionLabel": "情境 A：激進自動送出",
+          "phaseLabel": "Phase 1",
+          "title": "情境記憶階段",
+          "taskDocId": "voice_restaurant_phase_1",
+          "minRounds": 0,
+          "mode": "read_only",
+          "durationSeconds": 60,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "voice_restaurant_a_run1_phase_2",
+          "missionTitle": "餐廳語音",
+          "condition": "A",
+          "conditionLabel": "情境 A：激進自動送出",
+          "phaseLabel": "Phase 2",
+          "title": "語音決策與討論",
+          "taskDocId": "voice_restaurant_phase_2",
+          "minRounds": 1,
+          "mode": "voice",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "voice_restaurant_a_run1_phase_3",
+          "missionTitle": "餐廳語音",
+          "condition": "A",
+          "conditionLabel": "情境 A：激進自動送出",
+          "phaseLabel": "Phase 3",
+          "title": "AI 回覆後修正與確認",
+          "taskDocId": "voice_restaurant_phase_3",
+          "minRounds": 1,
+          "mode": "voice",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "voice_restaurant_a_run1_phase_1",
+      "chats": [
+        {
+          "id": "chat_1781078443110_i2ekq0",
+          "title": "語音討論",
+          "messages": [],
+          "createdAt": "2026-06-10T08:00:43.110Z"
+        }
+      ],
+      "activeChatId": "chat_1781078443110_i2ekq0",
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_dn1h2v",
+      "displayTitle": "語音任務 1 問卷",
+      "internalTitle": "餐廳語音問卷",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "voice_questionnaire_run1",
+          "missionTitle": "餐廳語音問卷",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "餐廳語音任務問卷",
+          "taskDocId": "voice_questionnaire",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "voice_questionnaire_run1",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "mission_1781078443110_g7y8hq",
+      "displayTitle": "語音任務 2",
+      "internalTitle": "餐廳語音 Mission 2",
+      "condition": "B",
+      "conditionLabel": "情境 B：使用者手動送出",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "voice_restaurant_b_run2_phase_1",
+          "missionTitle": "餐廳語音 Mission 2",
+          "condition": "B",
+          "conditionLabel": "情境 B：使用者手動送出",
+          "phaseLabel": "Phase 1",
+          "title": "情境記憶階段",
+          "taskDocId": "voice_restaurant_phase_1",
+          "minRounds": 0,
+          "mode": "read_only",
+          "durationSeconds": 60,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "voice_restaurant_b_run2_phase_2",
+          "missionTitle": "餐廳語音 Mission 2",
+          "condition": "B",
+          "conditionLabel": "情境 B：使用者手動送出",
+          "phaseLabel": "Phase 2",
+          "title": "語音決策與討論",
+          "taskDocId": "voice_restaurant_phase_2",
+          "minRounds": 1,
+          "mode": "voice",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        },
+        {
+          "id": "voice_restaurant_b_run2_phase_3",
+          "missionTitle": "餐廳語音 Mission 2",
+          "condition": "B",
+          "conditionLabel": "情境 B：使用者手動送出",
+          "phaseLabel": "Phase 3",
+          "title": "AI 回覆後修正與確認",
+          "taskDocId": "voice_restaurant_phase_3",
+          "minRounds": 1,
+          "mode": "voice",
+          "durationSeconds": null,
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "voice_restaurant_b_run2_phase_1",
+      "chats": [
+        {
+          "id": "chat_1781078443110_ykvtvv",
+          "title": "語音討論",
+          "messages": [],
+          "createdAt": "2026-06-10T08:00:43.110Z"
+        }
+      ],
+      "activeChatId": "chat_1781078443110_ykvtvv",
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_befg66",
+      "displayTitle": "語音任務 2 問卷",
+      "internalTitle": "餐廳語音問卷",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "voice_questionnaire_run2",
+          "missionTitle": "餐廳語音問卷",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "餐廳語音任務問卷",
+          "taskDocId": "voice_questionnaire",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "voice_questionnaire_run2",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    },
+    {
+      "id": "readonly_1781078443110_t75f7e",
+      "displayTitle": "實驗結束",
+      "internalTitle": "實驗結束",
+      "condition": null,
+      "conditionLabel": "說明",
+      "status": "locked",
+      "phases": [
+        {
+          "id": "end",
+          "missionTitle": "實驗結束",
+          "condition": null,
+          "conditionLabel": "說明",
+          "phaseLabel": "Info",
+          "title": "完成實驗",
+          "taskDocId": "end",
+          "minRounds": 0,
+          "mode": "read_only",
+          "status": "locked",
+          "startedAt": null,
+          "endedAt": null
+        }
+      ],
+      "activePhaseId": "end",
+      "chats": [],
+      "activeChatId": null,
+      "startedAt": null,
+      "endedAt": null
+    }
+  ],
+  "created_at": "2026-06-10T16:00:43.538348",
+  "updated_at": "2026-06-10T16:00:50.080763"
+}

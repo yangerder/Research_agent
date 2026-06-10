@@ -1,0 +1,9 @@
+created_at,participant_id,assignment_mode,text_condition,voice_condition,text_order,voice_order
+2026-06-01T22:40:35.341885,P101,between_subject,B,B,,
+2026-06-01T22:50:25.000165,P111,within_subject,,,BCA,AB
+2026-06-02T17:32:16.712685,p101,between_subject,A,A,,
+2026-06-02T17:43:21.996863,p102,within_subject,,,CBA,AB
+2026-06-05T22:44:44.862810,011,within_subject,,,ABC,AB
+2026-06-05T22:45:20.080694,100,between_subject,C,A,,
+2026-06-10T15:50:50.289962,1001,within_subject,,,CAB,AB
+2026-06-10T16:00:43.098365,P102,within_subject,,,BCA,AB

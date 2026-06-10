@@ -69,3 +69,12 @@ Thumbs.db
 # ======================
 *.tmp
 *.bak
+backend/database/*.csv
+backend/database/*.jsonl
+backend/database/participant_states/
+.remote_logs/
+*.log
+frontend/.next/
+frontend/node_modules/
+.env
+.env.*

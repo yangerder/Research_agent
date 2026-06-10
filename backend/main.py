@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from core import scenario_a, scenario_b, scenario_c
 from utils import logger
 from experiment import assignment as assignment_manager
+from experiment import state as state_manager
 
 load_dotenv()
 
@@ -31,6 +32,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _to_dict(model: BaseModel) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
 
 class ChatRequest(BaseModel):
@@ -70,6 +77,67 @@ class PhaseCompletionLog(BaseModel):
     ended_at: str
 
 
+class ParticipantStateSave(BaseModel):
+    participant_id: str
+    assignment_mode: Optional[str] = None
+    assignment: Optional[Any] = None
+    active_mission_id: Optional[str] = None
+    active_chat_id: Optional[str] = None
+    missions: list[dict[str, Any]]
+
+
+class ConversationMessage(BaseModel):
+    message_index: int
+    role: str
+    content: str
+
+
+class ConversationMessagesLog(BaseModel):
+    participant_id: str
+    assignment_mode: Optional[str] = None
+    mission_id: str
+    mission_title: str
+    phase_id: str
+    phase_label: str
+    chat_id: str
+    condition: Optional[str] = None
+    trigger_type: Optional[str] = None
+    messages: list[ConversationMessage]
+
+
+
+
+class InteractionEventLog(BaseModel):
+    participant_id: str
+    assignment_mode: Optional[str] = None
+    event_type: str
+    mission_id: Optional[str] = None
+    mission_title: Optional[str] = None
+    phase_id: Optional[str] = None
+    phase_label: Optional[str] = None
+    chat_id: Optional[str] = None
+    condition: Optional[str] = None
+    trigger_type: Optional[str] = None
+    event_time_client: Optional[str] = None
+    recording_duration_ms: Optional[float] = None
+    silence_duration_ms: Optional[float] = None
+    recovery_time_ms: Optional[float] = None
+    text_length: Optional[int] = None
+    details: Optional[Any] = None
+
+class ResetEventLog(BaseModel):
+    participant_id: str
+    reset_type: str
+    mission_id: str
+    mission_title: str
+    phase_id: Optional[str] = None
+    phase_label: Optional[str] = None
+    chat_count_removed: int = 0
+    message_count_removed: int = 0
+    reason: Optional[str] = ""
+    operator: Optional[str] = ""
+
+
 @app.get("/")
 async def root():
     return {"status": "Research Backend is Running"}
@@ -102,8 +170,6 @@ async def transcribe_audio(file: UploadFile = File(...)):
                 file=(Path(temp_path).name, audio_file.read()),
                 model="whisper-large-v3-turbo",
                 response_format="text",
-                language="zh",
-                prompt="以下是繁體中文語音，內容與旅遊規劃、餐廳選擇、使用者實驗有關。請以繁體中文轉寫，不要翻譯成英文。",
             )
 
         return {"text": transcription}
@@ -122,6 +188,7 @@ async def get_config():
         TOKEN_THRESHOLD,
         VAD_SILENCE_TIMEOUT_A,
         VAD_SILENCE_TIMEOUT_B,
+        VAD_SILENCE_TIMEOUT_C,
         VAD_THRESHOLD,
     )
 
@@ -130,6 +197,7 @@ async def get_config():
         "token_threshold": TOKEN_THRESHOLD,
         "vad_timeout_a": VAD_SILENCE_TIMEOUT_A,
         "vad_timeout_b": VAD_SILENCE_TIMEOUT_B,
+        "vad_timeout_c": VAD_SILENCE_TIMEOUT_C,
         "vad_threshold": VAD_THRESHOLD,
         "show_hint_b": SCENARIO_B_SHOW_HINT,
     }
@@ -146,7 +214,9 @@ async def start_experiment(req: ExperimentStartRequest):
     mode = req.assignment_mode or "between_subject"
 
     try:
-        return assignment_manager.start_experiment(participant_id, mode)
+        result = assignment_manager.start_experiment(participant_id, mode)
+        result["saved_state"] = state_manager.load_participant_state(participant_id)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
@@ -173,6 +243,50 @@ async def get_task_doc(doc_id: str):
         "doc_id": safe_doc_id,
         "content": doc_path.read_text(encoding="utf-8"),
     }
+
+
+@app.get("/experiment/state/{participant_id}")
+async def get_participant_state(participant_id: str):
+    state = state_manager.load_participant_state(participant_id)
+    return {"participant_id": participant_id, "state": state}
+
+
+@app.post("/experiment/state")
+async def save_participant_state(req: ParticipantStateSave):
+    try:
+        state = state_manager.save_participant_state(_to_dict(req))
+        return {"status": "participant state saved", "updated_at": state.get("updated_at")}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/experiment/messages")
+async def log_conversation_messages(req: ConversationMessagesLog):
+    try:
+        count = state_manager.append_messages(_to_dict(req))
+        return {"status": "messages logged", "count": count}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+
+
+@app.post("/experiment/interaction_event")
+async def log_interaction_event(req: InteractionEventLog):
+    try:
+        row = state_manager.log_interaction_event(_to_dict(req))
+        return {"status": "interaction event logged", "event_type": row.get("Event_Type"), "recovery_time_ms": row.get("Recovery_Time_ms")}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/experiment/reset")
+async def log_reset_event(req: ResetEventLog):
+    try:
+        state_manager.log_reset_event(_to_dict(req))
+        return {"status": "reset logged"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/experiment/complete_phase")

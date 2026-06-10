@@ -29,6 +29,7 @@ def log_event(
     tokens=0,
     rounds=0,
     migration_time_ms=0,
+    phase_id="",
 ):
     _ensure_database_dir()
 
@@ -45,6 +46,7 @@ def log_event(
         "Timestamp",
         "Subject_ID",
         "Chat_ID",
+        "Phase_ID",
         "Scenario",
         "Trigger_Type",
         "Recovery_Time_ms",
@@ -54,7 +56,7 @@ def log_event(
         "Input_Length",
     ]
 
-    with open(LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
+    with open(LOG_FILE, mode="a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         if not file_exists:
             writer.writeheader()
@@ -64,6 +66,7 @@ def log_event(
                 "Timestamp": datetime.now().isoformat(),
                 "Subject_ID": subject_id,
                 "Chat_ID": chat_id,
+                "Phase_ID": phase_id or "",
                 "Scenario": scenario,
                 "Trigger_Type": trigger_type,
                 "Recovery_Time_ms": round(recovery_time_ms, 2),
@@ -86,7 +89,7 @@ def log_migration(user_id, chat_id, migration_time, summary):
     )
 
 
-def record_interruption(subject_id, chat_id, scenario):
+def record_interruption(subject_id, chat_id, scenario, phase_id="") :
     tracker_key = (subject_id, chat_id)
     interruption_tracker[tracker_key] = time.time()
 
@@ -95,6 +98,7 @@ def record_interruption(subject_id, chat_id, scenario):
         chat_id=chat_id,
         scenario=scenario,
         trigger_type="auto_vad",
+        phase_id=phase_id,
         user_input="[SYSTEM_AUTO_CUTOFF]",
     )
 
@@ -128,7 +132,7 @@ def log_phase_completion(
         "Ended_At",
     ]
 
-    with open(PHASE_LOG_FILE, mode="a", newline="", encoding="utf-8") as f:
+    with open(PHASE_LOG_FILE, mode="a", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=headers)
         if not file_exists:
             writer.writeheader()

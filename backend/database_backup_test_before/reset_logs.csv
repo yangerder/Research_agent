@@ -1,0 +1,2 @@
+Timestamp,Participant_ID,Reset_Type,Mission_ID,Mission_Title,Phase_ID,Phase_Label,Chat_Count_Removed,Message_Count_Removed,Reason,Operator
+2026-06-10T15:48:36.453805,P101,phase,mission_1781077683491_fnq6o2,文字任務 1,text_travel_b_run1_phase_1,Phase 1,1,4,受測者做錯任務,researcher_or_participant

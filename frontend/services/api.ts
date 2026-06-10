@@ -41,7 +41,6 @@ export const transcribeAudio = async (audioBlob: Blob) => {
   return response.data.text;
 };
 
-
 export const startExperiment = async (participantId: string, assignmentMode: AssignmentMode = "between_subject") => {
   const response = await axios.post(`${API_BASE}/experiment/start`, {
     participant_id: participantId,
@@ -57,6 +56,82 @@ export const getExperimentFlow = async () => {
 
 export const getTaskDoc = async (docId: string) => {
   const response = await axios.get(`${API_BASE}/experiment/task_doc/${docId}`);
+  return response.data;
+};
+
+export const saveParticipantState = async (payload: {
+  participant_id: string;
+  assignment_mode?: AssignmentMode;
+  assignment?: any;
+  active_mission_id?: string | null;
+  active_chat_id?: string | null;
+  missions: any[];
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/state`, payload);
+  return response.data;
+};
+
+export const getParticipantState = async (participantId: string) => {
+  const response = await axios.get(`${API_BASE}/experiment/state/${participantId}`);
+  return response.data;
+};
+
+export const logConversationMessages = async (payload: {
+  participant_id: string;
+  assignment_mode?: AssignmentMode;
+  mission_id: string;
+  mission_title: string;
+  phase_id: string;
+  phase_label: string;
+  chat_id: string;
+  condition?: string | null;
+  trigger_type?: string;
+  messages: Array<{
+    message_index: number;
+    role: "user" | "assistant";
+    content: string;
+  }>;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/messages`, payload);
+  return response.data;
+};
+
+
+export const logInteractionEvent = async (payload: {
+  participant_id: string;
+  assignment_mode?: AssignmentMode;
+  event_type: string;
+  mission_id?: string | null;
+  mission_title?: string | null;
+  phase_id?: string | null;
+  phase_label?: string | null;
+  chat_id?: string | null;
+  condition?: string | null;
+  trigger_type?: string | null;
+  event_time_client?: string | null;
+  recording_duration_ms?: number | null;
+  silence_duration_ms?: number | null;
+  recovery_time_ms?: number | null;
+  text_length?: number | null;
+  details?: any;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/interaction_event`, payload);
+  return response.data;
+};
+
+export const logResetEvent = async (payload: {
+  participant_id: string;
+  reset_type: "phase" | "mission";
+  mission_id: string;
+  mission_title: string;
+  phase_id?: string | null;
+  phase_label?: string | null;
+  chat_count_removed: number;
+  message_count_removed: number;
+  reason?: string;
+  operator?: string;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/reset`, payload);
   return response.data;
 };
 
