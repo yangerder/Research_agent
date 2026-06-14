@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import random
+import config as app_config
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,34 @@ DATABASE_DIR = BASE_DIR / "database"
 ASSIGNMENT_FILE = DATABASE_DIR / "assignments.csv"
 
 VALID_MODES = {"between_subject", "within_subject"}
+
+
+def get_default_assignment_mode() -> str:
+    mode = str(getattr(app_config, "EXPERIMENT_ASSIGNMENT_MODE", "between_subject") or "between_subject").strip()
+    if mode not in VALID_MODES:
+        return "between_subject"
+    return mode
+
+
+def _apply_runtime_assignment_config(mode: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply editable backend/config.py capacity settings on top of JSON flow config.
+
+    The JSON files still define task docs/phases/order lists, while config.py is the
+    convenient place for the experimenter to adjust randomization mode and maximum
+    participants per condition/order.
+    """
+    domains = config.get("domains", {})
+    text_domain = domains.get("text_travel", {})
+    voice_domain = domains.get("voice_restaurant", {})
+
+    if mode == "between_subject":
+        text_domain["max_per_condition"] = int(getattr(app_config, "BETWEEN_SUBJECT_TEXT_MAX_PER_CONDITION", text_domain.get("max_per_condition", 999999)))
+        voice_domain["max_per_condition"] = int(getattr(app_config, "BETWEEN_SUBJECT_VOICE_MAX_PER_CONDITION", voice_domain.get("max_per_condition", 999999)))
+    elif mode == "within_subject":
+        text_domain["max_per_order"] = int(getattr(app_config, "WITHIN_SUBJECT_TEXT_MAX_PER_ORDER", text_domain.get("max_per_order", 999999)))
+        voice_domain["max_per_order"] = int(getattr(app_config, "WITHIN_SUBJECT_VOICE_MAX_PER_ORDER", voice_domain.get("max_per_order", 999999)))
+
+    return config
 
 
 def _ensure_database_dir() -> None:
@@ -28,7 +57,8 @@ def load_config(mode: str) -> Dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Experiment config not found: {path}")
 
-    return json.loads(path.read_text(encoding="utf-8"))
+    config = json.loads(path.read_text(encoding="utf-8"))
+    return _apply_runtime_assignment_config(mode, config)
 
 
 def _read_assignments() -> List[Dict[str, str]]:

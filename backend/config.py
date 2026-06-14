@@ -41,3 +41,31 @@ SUMMARY_PROMPT_ZH = """
 7. 已決定行程
 8. 後續注意事項
 """
+# -----------------------------
+# Experiment assignment settings
+# -----------------------------
+# Choose the default randomization design used when the Qualtrics URL does not
+# explicitly provide text/voice/order. Valid values:
+#   "between_subject": each participant gets one text condition and one voice condition
+#   "within_subject": each participant gets all conditions in a balanced order
+EXPERIMENT_ASSIGNMENT_MODE = "between_subject"
+
+# If True, text/voice/order in the Qualtrics URL will override backend randomization.
+# If False, the backend always uses EXPERIMENT_ASSIGNMENT_MODE randomization.
+QUALTRICS_ALLOW_URL_CONDITION_OVERRIDE = True
+
+# If True, Qualtrics URL must provide text and voice condition/order values.
+# Recommended for the current design: False, so Qualtrics only needs sid/qid/consent/study/token.
+QUALTRICS_REQUIRE_CONDITION_IN_URL = False
+
+# Between-subject capacity controls.
+# These are the maximum number of participants per condition before the assignment
+# helper falls back to the least-used condition.
+BETWEEN_SUBJECT_TEXT_MAX_PER_CONDITION = 20   # A/B/C
+BETWEEN_SUBJECT_VOICE_MAX_PER_CONDITION = 20  # A/B
+
+# Within-subject capacity controls.
+# In within-subject mode, every participant sees all conditions, so balancing is
+# by order/counterbalancing sequence rather than by condition.
+WITHIN_SUBJECT_TEXT_MAX_PER_ORDER = 10        # ABC/ACB/BAC/BCA/CAB/CBA
+WITHIN_SUBJECT_VOICE_MAX_PER_ORDER = 10       # AB/BA

@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from experiment import database
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_DIR = BASE_DIR / "database"
 LOG_FILE = DATABASE_DIR / "experiment_logs.csv"
@@ -76,6 +78,17 @@ def log_event(
                 "Input_Length": len(user_input),
             }
         )
+
+    # NOTE: Do not write Action_Logs here.
+    #
+    # logger.log_event() is a legacy CSV logger used by scenario_a/b/c.py.
+    # The formal SQLite Action_Logs row is written once in backend/main.py after
+    # /chat receives the complete response and has access to the full request
+    # metadata (task_type, phase_id, input_method, voice_duration_ms, etc.).
+    #
+    # Writing to Action_Logs here caused duplicate rows like:
+    #   Task_Type=Platform, Current_Phase=0, Phase_ID=''
+    # for every real Text_Travel / Voice_Restaurant turn.
 
 
 def log_migration(user_id, chat_id, migration_time, summary):
@@ -152,3 +165,29 @@ def log_phase_completion(
                 "Ended_At": ended_at,
             }
         )
+
+    try:
+        current_phase = int(str(phase_label).replace("Phase", "").strip() or 0)
+    except Exception:
+        current_phase = 0
+    database.log_event(
+        participant_id,
+        "phase_complete",
+        task_type="Voice_Restaurant" if "voice" in phase_id.lower() else "Text_Travel" if "text" in phase_id.lower() else "Platform",
+        current_phase=current_phase,
+        phase_id=phase_id,
+        phase_label=phase_label,
+        mission_title=mission_title,
+        metadata={
+            "condition": condition,
+            "title": title,
+            "round_count": round_count,
+            "chat_count": chat_count,
+            "started_at": started_at,
+            "ended_at": ended_at,
+        },
+    )
+
+
+# Initialize SQLite on import so the database exists before the first participant arrives.
+database.init_db()

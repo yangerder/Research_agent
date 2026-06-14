@@ -28,8 +28,12 @@ import {
   logPhaseCompletion,
   sendChatMessage,
   transcribeAudio,
+  updateActionTiming,
+  updateBaseline,
+  completeExperiment,
   type AssignmentMode,
   type Scenario,
+  type QualtricsStartPayload,
 } from "../services/api";
 
 interface Message {
@@ -48,6 +52,14 @@ interface Chat {
   createdAt: string;
 }
 
+interface QualtricsContext extends QualtricsStartPayload {
+  enabled: boolean;
+  sid: string;
+  qid: string;
+  study: string;
+  redirect_url?: string;
+}
+
 interface ExperimentPhase {
   id: string;
   missionTitle: string;
@@ -57,7 +69,7 @@ interface ExperimentPhase {
   title: string;
   taskDocId: string;
   minRounds: number;
-  mode: "text" | "voice" | "read_only";
+  mode: "text" | "voice" | "read_only" | "baseline";
   durationSeconds?: number | null;
   status: "locked" | "active" | "completed";
   startedAt?: string | null;
@@ -88,7 +100,7 @@ interface FlowPhaseConfig {
   title: string;
   taskDocId: string;
   minRounds: number;
-  mode: "text" | "voice" | "read_only";
+  mode: "text" | "voice" | "read_only" | "baseline";
   durationSeconds?: number | null;
 }
 
@@ -107,7 +119,21 @@ const createDefaultChat = (phaseTitle: string): Chat => ({
   createdAt: nowIso(),
 });
 
+const PHASE0_TYPING_TEXT = "請依照畫面文字完整照抄，這段文字用來測量你的基準打字速度。完成後請按送出，系統會記錄打字時間與正確率。";
+const PHASE0_SPEECH_TEXT = "請朗讀這段文字：我正在參與一項人工智慧協作實驗，接下來我會依照任務說明完成旅遊規劃與餐廳討論。";
+
 const fallbackFlow: FlowPhaseConfig[] = [
+  {
+    id: "phase0_baseline",
+    missionTitle: "Phase 0｜基準測試",
+    condition: null,
+    conditionLabel: "Baseline",
+    phaseLabel: "Phase 0",
+    title: "打字速度與語音節奏基準測試",
+    taskDocId: "phase0_baseline",
+    minRounds: 0,
+    mode: "baseline",
+  },
   {
     id: "intro",
     missionTitle: "實驗介紹",
@@ -165,9 +191,75 @@ const fallbackFlow: FlowPhaseConfig[] = [
   },
 ];
 
+
+const QUALTRICS_REQUIRED_PARAMS = ["sid", "qid", "consent", "study", "token"] as const;
+const QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS = ["text", "voice", "order"] as const;
+
+function parseQualtricsParams(): { context: QualtricsContext | null; error: string | null; hasQualtricsParams: boolean } {
+  if (typeof window === "undefined") return { context: null, error: null, hasQualtricsParams: false };
+  const params = new URLSearchParams(window.location.search);
+  const hasQualtricsParams = [...QUALTRICS_REQUIRED_PARAMS, ...QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS].some((key) => params.has(key)) || params.has("redirect_url") || params.has("post_survey_url") || params.has("return_url");
+  if (!hasQualtricsParams) return { context: null, error: null, hasQualtricsParams: false };
+
+  const missing = QUALTRICS_REQUIRED_PARAMS.filter((key) => !params.get(key)?.trim());
+  if (missing.length > 0) {
+    return { context: null, error: `Qualtrics URL 缺少必要參數：${missing.join(", ")}`, hasQualtricsParams: true };
+  }
+
+  const consent = params.get("consent") || "";
+  if (!["yes", "y", "true", "1", "agree", "agreed"].includes(consent.trim().toLowerCase())) {
+    return { context: null, error: "Qualtrics URL 顯示 consent 不是 yes，因此不能進入實驗。", hasQualtricsParams: true };
+  }
+
+  const text = (params.get("text") || "").trim().toUpperCase();
+  const voice = (params.get("voice") || "").trim().toUpperCase();
+
+  // text/voice/order are optional. When omitted, the backend randomizes using
+  // backend/config.py. If supplied, allow either between-subject conditions
+  // (A/B/C and A/B) or within-subject order strings (ABC... and AB/BA).
+  if (text && !["A", "B", "C", "ABC", "ACB", "BAC", "BCA", "CAB", "CBA"].includes(text)) {
+    return { context: null, error: `Qualtrics URL 的 text 條件/順序不合法：${text}`, hasQualtricsParams: true };
+  }
+  if (voice && !["A", "B", "AB", "BA"].includes(voice)) {
+    return { context: null, error: `Qualtrics URL 的 voice 條件/順序不合法：${voice}`, hasQualtricsParams: true };
+  }
+
+  const redirectUrl = params.get("redirect_url") || params.get("post_survey_url") || params.get("return_url") || "";
+  const context: QualtricsContext = {
+    enabled: true,
+    sid: params.get("sid")!.trim(),
+    qid: params.get("qid")!.trim(),
+    consent,
+    study: params.get("study")!.trim(),
+    text: text || undefined,
+    voice: voice || undefined,
+    order: params.get("order")?.trim() || undefined,
+    token: params.get("token")!.trim(),
+    redirect_url: redirectUrl,
+    post_survey_url: redirectUrl,
+    device_browser: typeof navigator !== "undefined" ? navigator.userAgent : "",
+  };
+  return { context, error: null, hasQualtricsParams: true };
+}
+
+function buildQualtricsReturnUrl(baseUrl: string, context: QualtricsContext, status = "completed") {
+  if (!baseUrl) return "";
+  const url = new URL(baseUrl, window.location.href);
+  url.searchParams.set("sid", context.sid);
+  url.searchParams.set("qid", context.qid);
+  url.searchParams.set("study", context.study);
+  url.searchParams.set("task_done", "1");
+  url.searchParams.set("completion", status);
+  return url.toString();
+}
+
 export default function ChatPage() {
   const [participantId, setParticipantId] = useState("");
   const [participantInput, setParticipantInput] = useState("");
+  const [qualtricsContext, setQualtricsContext] = useState<QualtricsContext | null>(null);
+  const [qualtricsEntryError, setQualtricsEntryError] = useState<string | null>(null);
+  const [qualtricsRedirectUrl, setQualtricsRedirectUrl] = useState<string>("");
+  const [isCompletingExperiment, setIsCompletingExperiment] = useState(false);
   const [assignmentMode, setAssignmentMode] =
     useState<AssignmentMode>("between_subject");
   const [assignmentInfo, setAssignmentInfo] = useState<any>(null);
@@ -195,6 +287,12 @@ export default function ChatPage() {
   const isRecordingRef = useRef(false);
   const recordingStartedAtRef = useRef<number | null>(null);
   const lastInterruptionAtRef = useRef<number | null>(null);
+  const lastResponseT4ClientRef = useRef<number | null>(null);
+  const pendingTextT5ClientRef = useRef<number | null>(null);
+  const pendingVoiceT5ClientRef = useRef<number | null>(null);
+  const pendingVoiceDurationMsRef = useRef<number | null>(null);
+  const pendingWhisperSttMsRef = useRef<number>(0);
+  const pendingInterruptionCountRef = useRef<number>(0);
   const silenceHintLoggedRef = useRef(false);
   const hasDetectedSpeechRef = useRef(false);
 
@@ -214,6 +312,30 @@ export default function ChatPage() {
     vad_threshold: 0.015,
     show_hint_b: true,
   });
+
+
+  const [phase0TypingInput, setPhase0TypingInput] = useState("");
+  const [phase0TypingStartedAt, setPhase0TypingStartedAt] = useState<number | null>(null);
+  const [phase0TypingResult, setPhase0TypingResult] = useState<{
+    cpm: number;
+    wpm: number;
+    durationMs: number;
+    accuracy: number;
+  } | null>(null);
+  const [phase0SpeechResult, setPhase0SpeechResult] = useState<{
+    speechRatio: number;
+    durationMs: number;
+    voiceFrames: number;
+    silenceFrames: number;
+  } | null>(null);
+  const [phase0Recording, setPhase0Recording] = useState(false);
+  const phase0AudioContextRef = useRef<AudioContext | null>(null);
+  const phase0AnalyserRef = useRef<AnalyserNode | null>(null);
+  const phase0StreamRef = useRef<MediaStream | null>(null);
+  const phase0IntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const phase0SpeechStartedAtRef = useRef<number | null>(null);
+  const phase0VoiceFramesRef = useRef(0);
+  const phase0SilenceFramesRef = useRef(0);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -248,6 +370,8 @@ export default function ChatPage() {
     );
   }, [selectedMission, activeChatId]);
 
+  const isPhase0Selected = selectedPhase?.mode === "baseline";
+  const phase0Completed = Boolean(phase0TypingResult && phase0SpeechResult);
   const currentCondition = selectedMission?.condition || "A";
   const phaseRounds = useMemo(
     () => countPhaseRounds(selectedPhase, selectedMission),
@@ -257,7 +381,9 @@ export default function ChatPage() {
     selectedMission &&
     selectedPhase &&
     selectedMission.status === "active" &&
-    phaseRounds >= selectedPhase.minRounds,
+    (selectedPhase.mode === "baseline"
+      ? phase0Completed
+      : phaseRounds >= selectedPhase.minRounds),
   );
   const isViewingCurrentMission =
     selectedMission &&
@@ -269,7 +395,7 @@ export default function ChatPage() {
     selectedPhase &&
     selectedChat &&
     selectedMission.status === "active" &&
-    selectedPhase.mode !== "read_only" &&
+    (selectedPhase.mode === "text" || selectedPhase.mode === "voice") &&
     isViewingCurrentMission &&
     !isLoading &&
     !isTranscribing,
@@ -277,11 +403,40 @@ export default function ChatPage() {
 
   useEffect(() => {
     try {
+      const parsed = parseQualtricsParams();
+      if (parsed.hasQualtricsParams) {
+        if (parsed.error || !parsed.context) {
+          setQualtricsEntryError(parsed.error || "Qualtrics URL 參數錯誤，無法進入實驗。");
+          return;
+        }
+        setQualtricsContext(parsed.context);
+        setQualtricsRedirectUrl(parsed.context.redirect_url || "");
+        setParticipantId(parsed.context.sid);
+        setParticipantInput(parsed.context.sid);
+        setAssignmentMode("between_subject");
+        localStorage.setItem("participant_id", parsed.context.sid);
+        localStorage.setItem("assignment_mode", "between_subject");
+        localStorage.setItem("qualtrics_context", JSON.stringify(parsed.context));
+        loadExperimentForParticipant(parsed.context.sid, "between_subject", parsed.context);
+        return;
+      }
+
       const savedMode = localStorage.getItem(
         "assignment_mode",
       ) as AssignmentMode | null;
       if (savedMode === "between_subject" || savedMode === "within_subject") {
         setAssignmentMode(savedMode);
+      }
+
+      const savedQualtrics = localStorage.getItem("qualtrics_context");
+      if (savedQualtrics) {
+        try {
+          const context = JSON.parse(savedQualtrics) as QualtricsContext;
+          if (context?.sid) {
+            setQualtricsContext(context);
+            setQualtricsRedirectUrl(context.redirect_url || "");
+          }
+        } catch {}
       }
 
       const savedId = localStorage.getItem("participant_id");
@@ -346,11 +501,16 @@ export default function ChatPage() {
   const loadExperimentForParticipant = async (
     pid: string,
     mode: AssignmentMode = assignmentMode,
+    qualtrics?: QualtricsStartPayload | null,
   ) => {
     try {
-      const data = await startExperiment(pid, mode);
+      const data = await startExperiment(pid, mode, qualtrics || null);
       setAssignmentInfo(data.assignment || data);
       setAssignmentMode(data.assignment_mode || mode);
+      if (data.qualtrics?.enabled) {
+        setQualtricsContext((prev) => ({ ...((prev || {}) as any), ...data.qualtrics, enabled: true } as QualtricsContext));
+        setQualtricsRedirectUrl(data.qualtrics.redirect_url || "");
+      }
 
       if (data.saved_state?.missions?.length) {
         restoreParticipantState(data.saved_state);
@@ -365,7 +525,8 @@ export default function ChatPage() {
   };
 
   const initializeMissions = (flowPhases: FlowPhaseConfig[]) => {
-    const initialized = buildMissionRuns(flowPhases);
+    const phasesWithPhase0 = ensurePhase0Flow(flowPhases);
+    const initialized = buildMissionRuns(phasesWithPhase0);
     setMissions(initialized);
     setActiveMissionId(initialized[0]?.id || null);
     setActiveChatId(initialized[0]?.activeChatId || null);
@@ -556,6 +717,153 @@ export default function ChatPage() {
     );
   };
 
+
+  const computeTypingAccuracy = (target: string, typed: string) => {
+    if (!target.length) return 0;
+    let correct = 0;
+    for (let i = 0; i < target.length; i += 1) {
+      if (typed[i] === target[i]) correct += 1;
+    }
+    return Math.round((correct / target.length) * 10000) / 100;
+  };
+
+  const submitPhase0Typing = async () => {
+    if (!participantId) {
+      setWarningMessage("請先輸入受測者編號");
+      return;
+    }
+    if (!phase0TypingStartedAt) {
+      setWarningMessage("請先開始打字測試");
+      return;
+    }
+    const typed = phase0TypingInput.trim();
+    if (!typed) {
+      setWarningMessage("請先照抄文字後再送出");
+      return;
+    }
+    const durationMs = Math.max(1, Date.now() - phase0TypingStartedAt);
+    const minutes = durationMs / 60000;
+    const cpm = Math.round((typed.length / minutes) * 100) / 100;
+    const wpm = Math.round(((typed.trim().split(/\s+/).filter(Boolean).length || typed.length / 5) / minutes) * 100) / 100;
+    const accuracy = computeTypingAccuracy(PHASE0_TYPING_TEXT, typed);
+    const result = { cpm, wpm, durationMs, accuracy };
+    setPhase0TypingResult(result);
+    try {
+      await updateBaseline({
+        participant_id: participantId,
+        baseline_typing_wpm: wpm,
+        baseline_typing_cpm_chinese: cpm,
+        baseline_typing_duration_ms: durationMs,
+        baseline_typing_accuracy: accuracy,
+        raw_baseline_json: {
+          typing_target: PHASE0_TYPING_TEXT,
+          typing_input: typed,
+          typing_result: result,
+        },
+      });
+    } catch (err) {
+      console.warn("baseline typing save failed", err);
+      setWarningMessage("打字基準測試儲存失敗，請通知研究者。");
+    }
+  };
+
+  const startPhase0SpeechRecording = async () => {
+    if (!participantId) {
+      setWarningMessage("請先輸入受測者編號");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      phase0StreamRef.current = stream;
+      phase0AudioContextRef.current = audioContext;
+      phase0AnalyserRef.current = analyser;
+      phase0VoiceFramesRef.current = 0;
+      phase0SilenceFramesRef.current = 0;
+      phase0SpeechStartedAtRef.current = Date.now();
+      setPhase0SpeechResult(null);
+      setPhase0Recording(true);
+      await trackInteractionEvent("baseline_speech_start", {
+        trigger_type: "phase0_speech_recording_start",
+        details: {
+          vad_threshold: config.vad_threshold,
+          frame_interval_ms: 20,
+        },
+      });
+
+      const sample = () => {
+        if (!phase0AnalyserRef.current) return;
+        const dataArray = new Float32Array(phase0AnalyserRef.current.fftSize);
+        phase0AnalyserRef.current.getFloatTimeDomainData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i += 1) sum += dataArray[i] * dataArray[i];
+        const rms = Math.sqrt(sum / dataArray.length);
+        const rawVadThreshold = Number(config.vad_threshold);
+        const normalizedVadThreshold =
+          Number.isFinite(rawVadThreshold) && rawVadThreshold > 1
+            ? rawVadThreshold / 1000
+            : rawVadThreshold;
+        const effectiveVadThreshold =
+          Number.isFinite(normalizedVadThreshold) && normalizedVadThreshold > 0
+            ? normalizedVadThreshold
+            : 0.015;
+        setVolume(rms);
+        if (rms >= effectiveVadThreshold) phase0VoiceFramesRef.current += 1;
+        else phase0SilenceFramesRef.current += 1;
+      };
+
+      phase0IntervalRef.current = setInterval(sample, 20);
+    } catch (err) {
+      console.warn("baseline speech recording failed", err);
+      setWarningMessage("無法取得麥克風權限，請檢查瀏覽器設定。");
+    }
+  };
+
+  const stopPhase0SpeechRecording = async () => {
+    if (!phase0Recording) return;
+    if (phase0IntervalRef.current) clearInterval(phase0IntervalRef.current);
+    phase0IntervalRef.current = null;
+    const durationMs = phase0SpeechStartedAtRef.current
+      ? Date.now() - phase0SpeechStartedAtRef.current
+      : 0;
+    const voiceFrames = phase0VoiceFramesRef.current;
+    const silenceFrames = phase0SilenceFramesRef.current;
+    const speechRatio = Math.round((voiceFrames / Math.max(1, silenceFrames)) * 10000) / 10000;
+    const result = { speechRatio, durationMs, voiceFrames, silenceFrames };
+    setPhase0SpeechResult(result);
+    setPhase0Recording(false);
+
+    phase0StreamRef.current?.getTracks().forEach((track) => track.stop());
+    phase0StreamRef.current = null;
+    if (phase0AudioContextRef.current) await phase0AudioContextRef.current.close();
+    phase0AudioContextRef.current = null;
+    phase0AnalyserRef.current = null;
+
+    try {
+      await updateBaseline({
+        participant_id: participantId,
+        baseline_speech_ratio: speechRatio,
+        baseline_speech_duration_ms: durationMs,
+        baseline_voice_frames: voiceFrames,
+        baseline_silence_frames: silenceFrames,
+        raw_baseline_json: {
+          speech_prompt: PHASE0_SPEECH_TEXT,
+          speech_result: result,
+          frame_interval_ms: 20,
+          vad_threshold: config.vad_threshold,
+        },
+      });
+    } catch (err) {
+      console.warn("baseline speech save failed", err);
+      setWarningMessage("語音基準測試儲存失敗，請通知研究者。");
+    }
+  };
+
   const startVAD = (stream: MediaStream) => {
     audioContextRef.current = new AudioContext();
     const source = audioContextRef.current.createMediaStreamSource(stream);
@@ -657,6 +965,7 @@ export default function ChatPage() {
       hasDetectedSpeechRef.current = false;
       setShowHint(false);
       recordingStartedAtRef.current = Date.now();
+      pendingVoiceT5ClientRef.current = performance.now();
       await markResumeAfterInterruption("recording_start_after_interruption");
       void trackInteractionEvent("recording_start", {
         trigger_type: "manual",
@@ -676,21 +985,28 @@ export default function ChatPage() {
           setIsTranscribing(true);
           setLoadingText("正在轉換語音");
 
-          const text = await transcribeAudio(
+          const transcription = await transcribeAudio(
             new Blob(chunksRef.current, { type: "audio/webm" }),
           );
+          const text = transcription.text || "";
+          pendingWhisperSttMsRef.current = transcription.whisper_stt_ms || 0;
+          pendingVoiceDurationMsRef.current = recordingDurationMs || 0;
+          pendingInterruptionCountRef.current = isAuto ? 1 : 0;
 
           void trackInteractionEvent(
             isAuto ? "auto_vad_transcribed" : "manual_recording_transcribed",
             {
-              trigger_type: isAuto ? "auto_vad" : "manual",
+              trigger_type: isAuto ? "auto_vad" : "manual_voice_submit",
               recording_duration_ms: recordingDurationMs,
               text_length: text?.trim()?.length || 0,
+              details: {
+                whisper_stt_ms: transcription.whisper_stt_ms || 0,
+              },
             },
           );
 
           if (text?.trim()) {
-            await handleSend(text, isAuto ? "auto_vad" : "manual");
+            await handleSend(text, isAuto ? "auto_vad" : "manual_voice_submit");
           } else if (isAuto) {
             void trackInteractionEvent("auto_vad_empty_transcription", {
               trigger_type: "auto_vad",
@@ -732,12 +1048,14 @@ export default function ChatPage() {
 
       if (isAuto) {
         lastInterruptionAtRef.current = stoppedAt;
-        void trackInteractionEvent("auto_vad_stop", {
+        void trackInteractionEvent("vad_cutoff", {
           trigger_type: "auto_vad",
           recording_duration_ms: recordingDurationMs,
           silence_duration_ms: silenceDurationMs,
           details: {
             note: "VAD stopped recording automatically after silence threshold.",
+            vad_threshold: config.vad_threshold,
+            vad_timeout_seconds: config.vad_timeout_a,
           },
         });
       } else {
@@ -756,7 +1074,13 @@ export default function ChatPage() {
     }
   };
 
-  const handleSend = async (customText?: string, trigger = "manual") => {
+  const markTextReengagement = () => {
+    if (pendingTextT5ClientRef.current === null && lastResponseT4ClientRef.current !== null) {
+      pendingTextT5ClientRef.current = performance.now();
+    }
+  };
+
+  const handleSend = async (customText?: string, trigger = "manual_button") => {
     const messageContent = customText || input;
 
     if (!participantId) {
@@ -776,17 +1100,29 @@ export default function ChatPage() {
 
     if (!canInteract || !messageContent.trim()) return;
 
-    if (trigger === "manual") {
+    if (trigger === "manual" || trigger === "manual_enter" || trigger === "manual_button") {
       await markResumeAfterInterruption("manual_message_after_interruption");
     }
 
-    void trackInteractionEvent(
-      trigger === "auto_vad" ? "auto_vad_message_send" : "manual_message_send",
-      {
-        trigger_type: trigger,
-        text_length: messageContent.trim().length,
-      },
-    );
+    const messageSendEventType =
+      trigger === "auto_vad"
+        ? "auto_vad_message_send"
+        : trigger === "manual_voice_submit"
+          ? "manual_voice_submit"
+          : "manual_message_send";
+
+    void trackInteractionEvent(messageSendEventType, {
+      trigger_type: trigger,
+      text_length: messageContent.trim().length,
+      details:
+        trigger === "auto_vad" || trigger === "manual_voice_submit"
+          ? {
+              voice_duration_ms: pendingVoiceDurationMsRef.current,
+              whisper_stt_ms: pendingWhisperSttMsRef.current,
+              interruption_count: pendingInterruptionCountRef.current,
+            }
+          : undefined,
+    });
 
     const historyBeforeSend = selectedChat.messages
       .filter((msg) => !msg.hidden)
@@ -818,6 +1154,26 @@ export default function ChatPage() {
     }
 
     try {
+      const previousT4ClientMs = lastResponseT4ClientRef.current;
+      const t5ClientMs =
+        trigger === "auto_vad" || trigger === "manual_voice_submit"
+          ? pendingVoiceT5ClientRef.current || performance.now()
+          : pendingTextT5ClientRef.current || performance.now();
+      const userReengagementMs = previousT4ClientMs
+        ? Math.max(0, t5ClientMs - previousT4ClientMs)
+        : 0;
+      const t1ClientMs = performance.now();
+      const voiceDurationMs =
+        trigger === "auto_vad" || trigger === "manual_voice_submit"
+          ? pendingVoiceDurationMsRef.current
+          : null;
+      const whisperSttMs =
+        trigger === "auto_vad" || trigger === "manual_voice_submit"
+          ? pendingWhisperSttMsRef.current
+          : 0;
+      const interruptionCount =
+        trigger === "auto_vad" ? Math.max(1, pendingInterruptionCountRef.current || 1) : 0;
+
       const data = await sendChatMessage(
         participantId,
         messageContent,
@@ -826,6 +1182,22 @@ export default function ChatPage() {
         trigger,
         selectedChat.id,
         selectedPhase.id,
+        {
+          mission_id: selectedMission.id,
+          mission_title: selectedMission.displayTitle,
+          phase_label: selectedPhase.phaseLabel,
+          task_type: selectedPhase.mode === "voice" ? "Voice_Restaurant" : "Text_Travel",
+          current_phase: Number(selectedPhase.phaseLabel.replace("Phase", "").trim()) || 0,
+          turn_count: phaseRounds + 1,
+          input_method: customText ? "Voice" : "Text",
+          t1_client_ms: t1ClientMs,
+          t5_client_ms: t5ClientMs,
+          previous_t4_client_ms: previousT4ClientMs,
+          user_reengagement_ms: userReengagementMs,
+          voice_duration_ms: voiceDurationMs,
+          whisper_stt_ms: whisperSttMs,
+          interruption_count: interruptionCount,
+        },
       );
 
       if (data.status === "warning") {
@@ -918,6 +1290,38 @@ export default function ChatPage() {
         trigger_type: trigger,
         messages: messagesToLog,
       });
+
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => resolve());
+      });
+      const t4ClientMs = performance.now();
+      lastResponseT4ClientRef.current = t4ClientMs;
+
+      if (data.action_log_id) {
+        try {
+          await updateActionTiming({
+            action_log_id: Number(data.action_log_id),
+            t1_client_ms: t1ClientMs,
+            t4_client_ms: t4ClientMs,
+            t5_client_ms: t5ClientMs,
+            previous_t4_client_ms: previousT4ClientMs,
+            user_reengagement_ms: userReengagementMs,
+          });
+        } catch (timingErr) {
+          console.warn("action timing update failed", timingErr);
+        }
+      }
+
+      if (trigger === "manual" || trigger === "manual_enter" || trigger === "manual_button") {
+        pendingTextT5ClientRef.current = null;
+      }
+
+      if (trigger === "auto_vad" || trigger === "manual_voice_submit") {
+        pendingVoiceT5ClientRef.current = null;
+        pendingVoiceDurationMsRef.current = null;
+        pendingWhisperSttMsRef.current = 0;
+        pendingInterruptionCountRef.current = 0;
+      }
     } catch (err) {
       console.error(err);
       setWarningMessage(
@@ -1186,6 +1590,46 @@ export default function ChatPage() {
     }
   };
 
+
+  const completeExperimentAndRedirect = async (endedAt: string) => {
+    if (!participantId || isCompletingExperiment) return;
+    setIsCompletingExperiment(true);
+    const context = qualtricsContext;
+    const redirectBase = qualtricsRedirectUrl || context?.redirect_url || "";
+    let finalRedirectUrl = "";
+    try {
+      const res = await completeExperiment({
+        participant_id: participantId,
+        sid: context?.sid || participantId,
+        qid: context?.qid || null,
+        study: context?.study || null,
+        redirect_url: redirectBase || null,
+        completion_status: "completed",
+        event_time_client: endedAt,
+        metadata: {
+          assignment_mode: assignmentMode,
+          assignment: assignmentInfo,
+          mission_count: missions.length,
+        },
+      });
+      finalRedirectUrl = res.redirect_url || (context && redirectBase ? buildQualtricsReturnUrl(redirectBase, context) : "");
+    } catch (err) {
+      console.warn("experiment complete log failed", err);
+      if (context && redirectBase) finalRedirectUrl = buildQualtricsReturnUrl(redirectBase, context);
+    }
+
+    if (context?.enabled && finalRedirectUrl) {
+      setWarningMessage("實驗已完成，正在跳轉回 Qualtrics 後測...");
+      window.location.assign(finalRedirectUrl);
+    } else if (context?.enabled && !finalRedirectUrl) {
+      setWarningMessage("實驗已完成，但 URL 沒有提供 redirect_url / post_survey_url。請通知研究者或手動返回 Qualtrics。");
+      setIsCompletingExperiment(false);
+    } else {
+      setWarningMessage("實驗已完成。資料已寫入 SQLite。");
+      setIsCompletingExperiment(false);
+    }
+  };
+
   const completeCurrentPhase = async () => {
     if (
       !selectedMission ||
@@ -1204,6 +1648,17 @@ export default function ChatPage() {
     const endedAt = nowIso();
 
     try {
+      if (participantId && selectedPhase.mode === "baseline") {
+        await updateBaseline({
+          participant_id: participantId,
+          phase0_completed: true,
+          raw_baseline_json: {
+            phase0_completed_at: endedAt,
+            typing_result: phase0TypingResult,
+            speech_result: phase0SpeechResult,
+          },
+        });
+      }
       if (participantId) {
         await logPhaseCompletion({
           participant_id: participantId,
@@ -1319,6 +1774,8 @@ export default function ChatPage() {
       setMigrationStartTime(null);
       setInput("");
       resetTextareaHeight();
+    } else {
+      await completeExperimentAndRedirect(endedAt);
     }
   };
 
@@ -1332,7 +1789,17 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
-      {!participantId && (
+      {qualtricsEntryError && (
+        <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl p-8 border border-red-100">
+            <h2 className="text-xl font-bold text-red-700 mb-3">Qualtrics 入口錯誤</h2>
+            <p className="text-sm text-gray-700 leading-relaxed mb-4">{qualtricsEntryError}</p>
+            <p className="text-xs text-gray-500">請確認 URL 至少包含 sid、qid、consent、study、token，且 consent=yes。text / voice / order 可以省略，省略時由後端隨機分配。</p>
+          </div>
+        </div>
+      )}
+
+      {!participantId && !qualtricsEntryError && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8">
             <h2 className="text-xl font-bold text-gray-900 mb-2">
@@ -1596,6 +2063,96 @@ export default function ChatPage() {
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
           <div className="max-w-3xl mx-auto space-y-6">
+            {isPhase0Selected && (
+              <div className="p-6 rounded-3xl bg-white border shadow-sm space-y-6">
+                <div>
+                  <div className="text-sm font-bold text-blue-600 mb-1">Phase 0｜基準測試</div>
+                  <h2 className="text-2xl font-bold text-gray-900">打字速度與語音節奏測試</h2>
+                  <p className="text-sm text-gray-500 mt-2 leading-relaxed">
+                    這個階段會先記錄你的基準打字速度與語音節奏，作為後續分析控制變項。完成兩項測試後，右側按鈕會解鎖正式任務。
+                  </p>
+                </div>
+
+                <section className="rounded-2xl border bg-gray-50 p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-gray-900">一、打字速度基準測試</h3>
+                      <p className="text-xs text-gray-500 mt-1">請完整照抄下方文字。開始輸入時會自動計時。</p>
+                    </div>
+                    {phase0TypingResult && <CheckCircle2 size={20} className="text-green-500" />}
+                  </div>
+                  <div className="rounded-xl bg-white border p-4 text-gray-700 leading-7">{PHASE0_TYPING_TEXT}</div>
+                  <textarea
+                    value={phase0TypingInput}
+                    onChange={(e) => {
+                      if (!phase0TypingStartedAt) {
+                        setPhase0TypingStartedAt(Date.now());
+                        void trackInteractionEvent("baseline_typing_start", {
+                          trigger_type: "phase0_typing_first_key",
+                          details: { target_text_length: PHASE0_TYPING_TEXT.length },
+                        });
+                      }
+                      setPhase0TypingInput(e.target.value);
+                    }}
+                    disabled={Boolean(phase0TypingResult)}
+                    rows={4}
+                    className="w-full rounded-2xl border border-gray-200 bg-white p-4 outline-none focus:ring-2 focus:ring-blue-500/20 disabled:bg-gray-100"
+                    placeholder="請從這裡開始照抄上方文字"
+                  />
+                  <button
+                    onClick={submitPhase0Typing}
+                    disabled={!phase0TypingInput.trim() || Boolean(phase0TypingResult)}
+                    className={`rounded-xl px-4 py-2 font-bold transition ${phase0TypingInput.trim() && !phase0TypingResult ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
+                  >
+                    送出打字測試
+                  </button>
+                  {phase0TypingResult && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <InfoRow label="中文 CPM" value={`${phase0TypingResult.cpm}`} />
+                      <InfoRow label="WPM" value={`${phase0TypingResult.wpm}`} />
+                      <InfoRow label="時間" value={`${Math.round(phase0TypingResult.durationMs / 1000)} 秒`} />
+                      <InfoRow label="正確率" value={`${phase0TypingResult.accuracy}%`} />
+                    </div>
+                  )}
+                </section>
+
+                <section className="rounded-2xl border bg-gray-50 p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h3 className="font-bold text-gray-900">二、語音節奏基準測試</h3>
+                      <p className="text-xs text-gray-500 mt-1">請按下錄音並朗讀下方文字。系統會用 Web Audio RMS 計算語音/靜音 frame ratio。</p>
+                    </div>
+                    {phase0SpeechResult && <CheckCircle2 size={20} className="text-green-500" />}
+                  </div>
+                  <div className="rounded-xl bg-white border p-4 text-gray-700 leading-7">{PHASE0_SPEECH_TEXT}</div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={phase0Recording ? stopPhase0SpeechRecording : startPhase0SpeechRecording}
+                      disabled={Boolean(phase0SpeechResult)}
+                      className={`rounded-xl px-4 py-2 font-bold transition ${phase0Recording ? "bg-red-500 text-white animate-pulse" : phase0SpeechResult ? "bg-gray-200 text-gray-400 cursor-not-allowed" : "bg-blue-600 text-white hover:bg-blue-700"}`}
+                    >
+                      {phase0Recording ? "停止錄音" : "開始錄音"}
+                    </button>
+                    <span className="text-xs text-gray-500">目前音量 RMS：{volume.toFixed(4)}</span>
+                  </div>
+                  {phase0SpeechResult && (
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <InfoRow label="Speech Ratio" value={`${phase0SpeechResult.speechRatio}`} />
+                      <InfoRow label="時間" value={`${Math.round(phase0SpeechResult.durationMs / 1000)} 秒`} />
+                      <InfoRow label="Voice Frames" value={`${phase0SpeechResult.voiceFrames}`} />
+                      <InfoRow label="Silence Frames" value={`${phase0SpeechResult.silenceFrames}`} />
+                    </div>
+                  )}
+                </section>
+
+                {!phase0Completed && (
+                  <div className="rounded-2xl bg-yellow-50 border border-yellow-200 text-yellow-800 p-4 text-sm">
+                    請完成打字與語音兩項基準測試後，再按右側「完成此階段」進入正式任務。
+                  </div>
+                )}
+              </div>
+            )}
+
             {!selectedChat && selectedPhase?.mode === "read_only" && (
               <div className="p-6 rounded-3xl bg-gray-50 border text-gray-600 leading-relaxed">
                 目前階段不需要聊天。請閱讀右側任務文件，完成後按右下角按鈕繼續。
@@ -1725,6 +2282,7 @@ export default function ChatPage() {
                 value={input}
                 rows={1}
                 onChange={(e) => {
+                  markTextReengagement();
                   setInput(e.target.value);
                   autoResizeTextarea();
                 }}
@@ -1732,7 +2290,7 @@ export default function ChatPage() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    handleSend();
+                    handleSend(undefined, "manual_enter");
                   }
                 }}
                 placeholder={
@@ -1749,7 +2307,7 @@ export default function ChatPage() {
               />
 
               <button
-                onClick={() => handleSend()}
+                onClick={() => handleSend(undefined, "manual_button")}
                 disabled={!canInteract || !input.trim()}
                 className={`p-4 rounded-2xl transition-all shadow-sm ${
                   canInteract && input.trim()
@@ -1867,7 +2425,9 @@ export default function ChatPage() {
                   >
                     {canCompletePhase
                       ? "完成此階段，進入下一階段"
-                      : "尚未完成最低輪數"}
+                      : selectedPhase.mode === "baseline"
+                        ? "請先完成兩項基準測試"
+                        : "尚未完成最低輪數"}
                   </button>
                 </div>
               ) : currentActiveMission ? (
@@ -1878,8 +2438,20 @@ export default function ChatPage() {
                   返回目前進行中任務
                 </button>
               ) : (
-                <div className="w-full py-3.5 rounded-xl font-bold bg-green-50 text-green-700 text-center border border-green-100">
-                  全部任務已完成
+                <div className="space-y-2">
+                  <div className="w-full py-3.5 rounded-xl font-bold bg-green-50 text-green-700 text-center border border-green-100">
+                    全部任務已完成
+                  </div>
+                  {qualtricsContext?.enabled && qualtricsRedirectUrl && (
+                    <button
+                      type="button"
+                      disabled={isCompletingExperiment}
+                      onClick={() => completeExperimentAndRedirect(nowIso())}
+                      className="w-full py-3 rounded-xl font-bold bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 transition-all"
+                    >
+                      返回 Qualtrics 後測
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -2025,6 +2597,27 @@ function applyConditionAResponse(
   return nextMessages;
 }
 
+function ensurePhase0Flow(flowPhases: FlowPhaseConfig[]): FlowPhaseConfig[] {
+  if (flowPhases.some((phase) => phase.id === "phase0_baseline" || phase.taskDocId === "phase0_baseline")) {
+    return flowPhases;
+  }
+
+  return [
+    {
+      id: "phase0_baseline",
+      missionTitle: "Phase 0｜基準測試",
+      condition: null,
+      conditionLabel: "Baseline",
+      phaseLabel: "Phase 0",
+      title: "打字速度與語音節奏基準測試",
+      taskDocId: "phase0_baseline",
+      minRounds: 0,
+      mode: "baseline",
+    },
+    ...flowPhases,
+  ];
+}
+
 function buildMissionRuns(
   flowPhases: FlowPhaseConfig[],
 ): ExperimentMissionRun[] {
@@ -2034,19 +2627,22 @@ function buildMissionRuns(
   let voiceTaskCount = 0;
 
   for (const phase of flowPhases) {
-    const isInteractive = phase.mode !== "read_only";
+    const isInteractive = phase.mode === "text" || phase.mode === "voice";
     const isTextTaskPhase = phase.taskDocId.startsWith("text_travel_phase_");
     const isVoiceTaskPhase = phase.taskDocId.startsWith(
       "voice_restaurant_phase_",
     );
+    const isBaselinePhase = phase.taskDocId === "phase0_baseline" || phase.mode === "baseline";
     const isTaskPhase = isTextTaskPhase || isVoiceTaskPhase;
 
     // Important: voice Phase 1 is read_only, but it is still part of the same
     // voice task as Phase 2/3. Therefore task phases must be grouped by the
     // backend run identity, not by whether the phase is interactive.
-    const key = isTaskPhase
-      ? `task|${phase.missionTitle}|${phase.condition || "none"}`
-      : `${phase.id}|read_only`;
+    const key = isBaselinePhase
+      ? "phase0_baseline"
+      : isTaskPhase
+        ? `task|${phase.missionTitle}|${phase.condition || "none"}`
+        : `${phase.id}|read_only`;
 
     let mission = taskKeyToMissionId.has(key)
       ? missions.find((m) => m.id === taskKeyToMissionId.get(key)) || null
@@ -2054,7 +2650,9 @@ function buildMissionRuns(
 
     if (!mission) {
       let displayTitle = phase.missionTitle;
-      if (phase.taskDocId === "text_questionnaire") {
+      if (isBaselinePhase) {
+        displayTitle = "Phase 0｜基準測試";
+      } else if (phase.taskDocId === "text_questionnaire") {
         displayTitle = `文字任務 ${Math.max(textTaskCount, 1)} 問卷`;
       } else if (phase.taskDocId === "voice_questionnaire") {
         displayTitle = `語音任務 ${Math.max(voiceTaskCount, 1)} 問卷`;
@@ -2067,7 +2665,7 @@ function buildMissionRuns(
       }
 
       const initialChat = isInteractive ? createDefaultChat(phase.title) : null;
-      const missionId = makeId(isTaskPhase ? "mission" : "readonly");
+      const missionId = isBaselinePhase ? "phase0_baseline" : makeId(isTaskPhase ? "mission" : "readonly");
 
       mission = {
         id: missionId,

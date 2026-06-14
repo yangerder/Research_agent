@@ -1,24 +1,24 @@
-# 檔案：.gitignore
-
-# 敏感資訊
-.env
-
-# Python 產生的雜物
+# Python
 __pycache__/
 *.pyc
-
-# 作業系統雜物
-Thumbs.db
-.DS_Store
-
-# 虛擬環境
-venv/
 .venv/
-env/
+venv/
+.env
 
-# 前端依賴 (雖然目前看起來沒問題，但建議加上)
+# Node / Next
 node_modules/
+.next/
+out/
+.vercel/
 
-# 個人筆記或實驗紀錄 (視需求決定)
-backend/database/*.csv
-*.docx
+# Experiment runtime data
+backend/database/*.db
+backend/database/*.db-journal
+backend/database/*.sqlite
+backend/database/*.sqlite3
+.remote_logs/
+logs/
+*.log
+
+# Local generated files
+*.tmp

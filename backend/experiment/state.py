@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from experiment import database
+
 BASE_DIR = Path(__file__).resolve().parents[1]
 DATABASE_DIR = BASE_DIR / "database"
 STATE_DIR = DATABASE_DIR / "participant_states"
@@ -66,6 +68,11 @@ def save_participant_state(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("participant_id is required")
 
     _ensure_dirs()
+    database.upsert_participant(
+        participant_id,
+        assignment_mode=str(payload.get("assignment_mode") or ""),
+        task_completion_status="partial",
+    )
 
     lock = _get_state_lock(participant_id)
     with lock:
@@ -111,6 +118,7 @@ def append_messages(payload: Dict[str, Any]) -> int:
         raise ValueError("messages must be a list")
 
     _ensure_dirs()
+    database.append_conversation_messages(payload)
 
     common = {
         "participant_id": participant_id,
@@ -183,6 +191,18 @@ def log_reset_event(payload: Dict[str, Any]) -> None:
             }
         )
 
+    database.log_event(
+        participant_id,
+        f"reset_{payload.get('reset_type', '')}",
+        task_type="Platform",
+        current_phase=0,
+        mission_id=payload.get("mission_id", ""),
+        mission_title=payload.get("mission_title", ""),
+        phase_id=payload.get("phase_id", ""),
+        phase_label=payload.get("phase_label", ""),
+        metadata=payload,
+    )
+
 
 def log_interaction_event(payload: Dict[str, Any]) -> Dict[str, Any]:
     participant_id = str(payload.get("participant_id", "")).strip()
@@ -252,5 +272,23 @@ def log_interaction_event(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     with open(INTERACTION_EVENT_JSONL, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    task_type = "Voice_Restaurant" if "voice" in (phase_id or "").lower() or "語音" in str(payload.get("mission_title", "")) else "Text_Travel" if "text" in (phase_id or "").lower() or "文字" in str(payload.get("mission_title", "")) else "Platform"
+    try:
+        phase_num = int(str(payload.get("phase_label", "0")).replace("Phase", "").strip() or 0)
+    except Exception:
+        phase_num = 0
+    database.log_event(
+        participant_id,
+        event_type,
+        task_type=task_type,
+        current_phase=phase_num,
+        mission_id=mission_id,
+        mission_title=payload.get("mission_title", "") or "",
+        phase_id=phase_id,
+        phase_label=payload.get("phase_label", "") or "",
+        chat_id=chat_id,
+        metadata=row,
+    )
 
     return row

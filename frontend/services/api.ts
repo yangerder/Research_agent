@@ -13,7 +13,8 @@ export const sendChatMessage = async (
   scenario: Scenario,
   trigger: string = "manual",
   chatId: string,
-  phaseId?: string
+  phaseId?: string,
+  metadata: Record<string, any> = {}
 ) => {
   const response = await axios.post(`${API_BASE}/chat`, {
     user_id: userId,
@@ -23,12 +24,13 @@ export const sendChatMessage = async (
     scenario,
     trigger_type: trigger,
     phase_id: phaseId,
+    ...metadata,
   });
 
   return response.data;
 };
 
-export const transcribeAudio = async (audioBlob: Blob) => {
+export const transcribeAudio = async (audioBlob: Blob): Promise<{ text: string; whisper_stt_ms: number }> => {
   const formData = new FormData();
   formData.append("file", audioBlob, "audio.webm");
 
@@ -38,13 +40,35 @@ export const transcribeAudio = async (audioBlob: Blob) => {
     },
   });
 
-  return response.data.text;
+  return {
+    text: response.data?.text || "",
+    whisper_stt_ms: Number(response.data?.whisper_stt_ms || 0),
+  };
 };
 
-export const startExperiment = async (participantId: string, assignmentMode: AssignmentMode = "between_subject") => {
+export interface QualtricsStartPayload {
+  sid?: string;
+  qid?: string;
+  consent?: string;
+  study?: string;
+  text?: string;
+  voice?: string;
+  order?: string;
+  token?: string;
+  redirect_url?: string;
+  post_survey_url?: string;
+  device_browser?: string;
+}
+
+export const startExperiment = async (
+  participantId: string,
+  assignmentMode: AssignmentMode = "between_subject",
+  qualtrics?: QualtricsStartPayload | null,
+) => {
   const response = await axios.post(`${API_BASE}/experiment/start`, {
     participant_id: participantId,
     assignment_mode: assignmentMode,
+    ...(qualtrics || {}),
   });
   return response.data;
 };
@@ -158,5 +182,61 @@ export const logMigration = async (payload: {
   summary: string;
 }) => {
   const response = await axios.post(`${API_BASE}/log_migration`, payload);
+  return response.data;
+};
+
+
+
+export const updateActionTiming = async (payload: {
+  action_log_id: number;
+  t1_client_ms?: number | null;
+  t4_client_ms?: number | null;
+  t5_client_ms?: number | null;
+  previous_t4_client_ms?: number | null;
+  user_reengagement_ms?: number | null;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/action_timing_update`, payload);
+  return response.data;
+};
+
+export const updateBaseline = async (payload: {
+  participant_id: string;
+  baseline_typing_wpm?: number | null;
+  baseline_typing_cpm_chinese?: number | null;
+  baseline_typing_duration_ms?: number | null;
+  baseline_typing_accuracy?: number | null;
+  baseline_speech_ratio?: number | null;
+  baseline_speech_duration_ms?: number | null;
+  baseline_voice_frames?: number | null;
+  baseline_silence_frames?: number | null;
+  phase0_completed?: boolean | null;
+  raw_baseline_json?: any;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/baseline`, payload);
+  return response.data;
+};
+
+export const logSystemError = async (payload: {
+  participant_id?: string | null;
+  error_type: string;
+  error_message: string;
+  recoverability?: string;
+  metadata?: any;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/system_error`, payload);
+  return response.data;
+};
+
+export const completeExperiment = async (payload: {
+  participant_id: string;
+  sid?: string | null;
+  qid?: string | null;
+  study?: string | null;
+  redirect_url?: string | null;
+  completion_status?: string;
+  event_time_client?: string | null;
+  metadata?: any;
+}) => {
+  const response = await axios.post(`${API_BASE}/experiment/complete`, payload);
   return response.data;
 };
