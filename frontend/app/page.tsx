@@ -220,7 +220,7 @@ function parseQualtricsParams(): { context: QualtricsContext | null; error: stri
   if (text && !["A", "B", "C", "ABC", "ACB", "BAC", "BCA", "CAB", "CBA"].includes(text)) {
     return { context: null, error: `Qualtrics URL 的 text 條件/順序不合法：${text}`, hasQualtricsParams: true };
   }
-  if (voice && !["A", "B", "AB", "BA"].includes(voice)) {
+  if (voice && !["A", "B", "C", "ABC", "ACB", "BAC", "BCA", "CAB", "CBA"].includes(voice)) {
     return { context: null, error: `Qualtrics URL 的 voice 條件/順序不合法：${voice}`, hasQualtricsParams: true };
   }
 
@@ -296,6 +296,16 @@ export default function ChatPage() {
   const silenceHintLoggedRef = useRef(false);
   const hasDetectedSpeechRef = useRef(false);
 
+  // Condition C: Repairable VAD state/refs.
+  // These refs keep the whole repairable VAD interaction within the same voice turn.
+  const [repairGateOpen, setRepairGateOpen] = useState(false);
+  const repairGateOpenRef = useRef(false);
+  const conditionCTurnIdRef = useRef<string | null>(null);
+  const conditionCVadTriggerCountRef = useRef(0);
+  const conditionCRepairGateStartMsRef = useRef<number | null>(null);
+  const conditionCTotalRepairGateDwellMsRef = useRef(0);
+  const conditionCFinalRepairChoiceRef = useRef("not_applicable");
+
   const [migrationStartTime, setMigrationStartTime] = useState<number | null>(
     null,
   );
@@ -308,9 +318,10 @@ export default function ChatPage() {
     token_threshold: 300,
     vad_timeout_a: 1.0,
     vad_timeout_b: 2.0,
-    vad_timeout_c: 2.0,
+    vad_timeout_c: 0.7,
     vad_threshold: 0.015,
     show_hint_b: true,
+    dev_password: "1234",
   });
 
 
@@ -864,94 +875,168 @@ export default function ChatPage() {
     }
   };
 
-  const startVAD = (stream: MediaStream) => {
-    audioContextRef.current = new AudioContext();
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    analyserRef.current = audioContextRef.current.createAnalyser();
-    analyserRef.current.fftSize = 256;
-    source.connect(analyserRef.current);
+  
+const openConditionCRepairGate = async (silenceDurationMs: number) => {
+  if (repairGateOpenRef.current || currentCondition !== "C") return;
+  const recorder = mediaRecorderRef.current;
+  if (!recorder || recorder.state === "inactive") return;
 
-    const checkVolume = () => {
-      if (!analyserRef.current || !isRecordingRef.current) return;
+  conditionCVadTriggerCountRef.current += 1;
+  conditionCRepairGateStartMsRef.current = performance.now();
+  repairGateOpenRef.current = true;
+  setRepairGateOpen(true);
+  setShowHint(false);
 
-      const dataArray = new Float32Array(analyserRef.current.fftSize);
-      analyserRef.current.getFloatTimeDomainData(dataArray);
+  try {
+    if (recorder.state === "recording") recorder.pause();
+  } catch (err) {
+    console.warn("MediaRecorder.pause failed; continuing with blob accumulation", err);
+  }
 
-      let sum = 0;
-      for (let i = 0; i < dataArray.length; i += 1) {
-        sum += dataArray[i] * dataArray[i];
-      }
+  await trackInteractionEvent("repair_gate_shown", {
+    trigger_type: "repair_gate_shown",
+    silence_duration_ms: silenceDurationMs,
+    details: {
+      turn_id: conditionCTurnIdRef.current,
+      condition: "Condition_C",
+      silence_duration_ms: silenceDurationMs,
+      rms_threshold: config.vad_threshold,
+      vad_trigger_index: conditionCVadTriggerCountRef.current,
+      timestamp_ms: performance.now(),
+    },
+  });
+};
 
-      const rms = Math.sqrt(sum / dataArray.length);
-      setVolume(rms);
+const continueConditionCSpeaking = async () => {
+  if (!repairGateOpenRef.current) return;
+  const nowMs = performance.now();
+  const dwellMs = conditionCRepairGateStartMsRef.current
+    ? nowMs - conditionCRepairGateStartMsRef.current
+    : 0;
+  conditionCTotalRepairGateDwellMsRef.current += dwellMs;
 
-      const now = Date.now();
-      const recordingElapsedMs = recordingStartedAtRef.current
-        ? now - recordingStartedAtRef.current
-        : 0;
-      const rawVadThreshold = Number(config.vad_threshold);
-      const normalizedVadThreshold =
-        Number.isFinite(rawVadThreshold) && rawVadThreshold > 1
-          ? rawVadThreshold / 1000
-          : rawVadThreshold;
-      const effectiveVadThreshold =
-        Number.isFinite(normalizedVadThreshold) && normalizedVadThreshold > 0
-          ? normalizedVadThreshold
-          : 0.015;
-      const effectiveTimeout =
-        currentCondition === "A"
-          ? config.vad_timeout_a
-          : currentCondition === "C"
-            ? config.vad_timeout_c
-            : config.vad_timeout_b;
+  await trackInteractionEvent("repair_gate_decision", {
+    trigger_type: "continue_speaking",
+    details: {
+      turn_id: conditionCTurnIdRef.current,
+      condition: "Condition_C",
+      vad_trigger_index: conditionCVadTriggerCountRef.current,
+      user_choice: "continue_speaking",
+      reaction_time_ms: Math.round(dwellMs),
+      timestamp_ms: nowMs,
+    },
+  });
 
-      if (rms >= effectiveVadThreshold) {
-        hasDetectedSpeechRef.current = true;
-        silenceStartRef.current = null;
-        setShowHint(false);
-      } else if (hasDetectedSpeechRef.current) {
-        if (!silenceStartRef.current) silenceStartRef.current = now;
+  repairGateOpenRef.current = false;
+  setRepairGateOpen(false);
+  conditionCRepairGateStartMsRef.current = null;
+  silenceStartRef.current = null;
+  hasDetectedSpeechRef.current = false;
 
-        if ((now - silenceStartRef.current) / 1000 > effectiveTimeout) {
-          if (currentCondition === "A") {
-            // Condition A: after real speech is detected, auto-submit only after
-            // the configured silence timeout in backend/config.py.
-            stopRecording(true);
-            return;
-          }
+  try {
+    if (mediaRecorderRef.current?.state === "paused") {
+      mediaRecorderRef.current.resume();
+    }
+  } catch (err) {
+    console.warn("MediaRecorder.resume failed", err);
+  }
+};
 
-          // Condition B/C: do not auto-submit; show/log the hint once per recording.
-          if (config.show_hint_b && !showHint) {
-            setShowHint(true);
-          }
+const sendConditionCNow = async () => {
+  if (!repairGateOpenRef.current) return;
+  const nowMs = performance.now();
+  const dwellMs = conditionCRepairGateStartMsRef.current
+    ? nowMs - conditionCRepairGateStartMsRef.current
+    : 0;
+  conditionCTotalRepairGateDwellMsRef.current += dwellMs;
+  conditionCFinalRepairChoiceRef.current = "send_now_clicked";
 
+  await trackInteractionEvent("repair_gate_decision", {
+    trigger_type: "send_now",
+    details: {
+      turn_id: conditionCTurnIdRef.current,
+      condition: "Condition_C",
+      vad_trigger_index: conditionCVadTriggerCountRef.current,
+      user_choice: "send_now",
+      reaction_time_ms: Math.round(dwellMs),
+      timestamp_ms: nowMs,
+    },
+  });
+
+  repairGateOpenRef.current = false;
+  setRepairGateOpen(false);
+  conditionCRepairGateStartMsRef.current = null;
+  stopRecording(false);
+};
+
+  
+const startVAD = (stream: MediaStream) => {
+  audioContextRef.current = new AudioContext();
+  const source = audioContextRef.current.createMediaStreamSource(stream);
+  analyserRef.current = audioContextRef.current.createAnalyser();
+  analyserRef.current.fftSize = 256;
+  source.connect(analyserRef.current);
+
+  const checkVolume = () => {
+    if (!analyserRef.current || !isRecordingRef.current) return;
+    if (repairGateOpenRef.current) {
+      requestRef.current = requestAnimationFrame(checkVolume);
+      return;
+    }
+
+    const dataArray = new Float32Array(analyserRef.current.fftSize);
+    analyserRef.current.getFloatTimeDomainData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i += 1) sum += dataArray[i] * dataArray[i];
+    const rms = Math.sqrt(sum / dataArray.length);
+    setVolume(rms);
+
+    const now = Date.now();
+    const rawVadThreshold = Number(config.vad_threshold);
+    const normalizedVadThreshold = Number.isFinite(rawVadThreshold) && rawVadThreshold > 1 ? rawVadThreshold / 1000 : rawVadThreshold;
+    const effectiveVadThreshold = Number.isFinite(normalizedVadThreshold) && normalizedVadThreshold > 0 ? normalizedVadThreshold : 0.015;
+    const effectiveTimeout = currentCondition === "A" ? config.vad_timeout_a : currentCondition === "C" ? config.vad_timeout_c : config.vad_timeout_b;
+
+    if (rms >= effectiveVadThreshold) {
+      hasDetectedSpeechRef.current = true;
+      silenceStartRef.current = null;
+      setShowHint(false);
+    } else if (hasDetectedSpeechRef.current) {
+      if (!silenceStartRef.current) silenceStartRef.current = now;
+      const silenceDurationMs = now - silenceStartRef.current;
+      if (silenceDurationMs / 1000 > effectiveTimeout) {
+        if (currentCondition === "A") {
+          stopRecording(true);
+          return;
+        }
+        if (currentCondition === "C") {
+          void openConditionCRepairGate(silenceDurationMs);
+          silenceStartRef.current = null;
+        } else {
+          setShowHint(true);
           if (!silenceHintLoggedRef.current) {
             silenceHintLoggedRef.current = true;
-            void trackInteractionEvent("vad_silence_hint", {
-              trigger_type: "hint",
-              silence_duration_ms: silenceStartRef.current
-                ? now - silenceStartRef.current
-                : null,
+            void trackInteractionEvent("silence_hint_shown", {
+              trigger_type: "manual_voice_submit",
+              silence_duration_ms: silenceDurationMs,
               details: {
-                vad_threshold: effectiveVadThreshold,
-                vad_timeout_seconds: effectiveTimeout,
-                recording_elapsed_ms: recordingElapsedMs,
+                vad_threshold: config.vad_threshold,
+                vad_timeout_seconds: config.vad_timeout_b,
               },
             });
           }
         }
-      } else {
-        // Initial silence before any speech should not count as the user finishing.
-        silenceStartRef.current = null;
       }
+    } else {
+      silenceStartRef.current = null;
+    }
 
-      requestRef.current = requestAnimationFrame(checkVolume);
-    };
-
-    checkVolume();
+    requestRef.current = requestAnimationFrame(checkVolume);
   };
+  checkVolume();
+};
 
-  const startRecording = async () => {
+const startRecording = async () => {
     if (!canInteract) return;
 
     try {
@@ -960,6 +1045,14 @@ export default function ChatPage() {
 
       mediaRecorderRef.current = mediaRecorder;
       chunksRef.current = [];
+      conditionCTurnIdRef.current = makeId("voice_turn");
+      conditionCVadTriggerCountRef.current = 0;
+      conditionCTotalRepairGateDwellMsRef.current = 0;
+      conditionCFinalRepairChoiceRef.current = "not_applicable";
+      conditionCRepairGateStartMsRef.current = null;
+      repairGateOpenRef.current = false;
+      setRepairGateOpen(false);
+
       silenceStartRef.current = null;
       silenceHintLoggedRef.current = false;
       hasDetectedSpeechRef.current = false;
@@ -992,6 +1085,11 @@ export default function ChatPage() {
           pendingWhisperSttMsRef.current = transcription.whisper_stt_ms || 0;
           pendingVoiceDurationMsRef.current = recordingDurationMs || 0;
           pendingInterruptionCountRef.current = isAuto ? 1 : 0;
+          const isConditionCVoice = currentCondition === "C";
+          const conditionCPureSpeechDurationMs = isConditionCVoice
+            ? Math.max(0, (recordingDurationMs || 0) - conditionCTotalRepairGateDwellMsRef.current)
+            : 0;
+
 
           void trackInteractionEvent(
             isAuto ? "auto_vad_transcribed" : "manual_recording_transcribed",
@@ -1197,6 +1295,14 @@ export default function ChatPage() {
           voice_duration_ms: voiceDurationMs,
           whisper_stt_ms: whisperSttMs,
           interruption_count: interruptionCount,
+            turn_id: currentCondition === "C" ? conditionCTurnIdRef.current : undefined,
+            vad_trigger_count: currentCondition === "C" ? conditionCVadTriggerCountRef.current : 0,
+            final_repair_choice: currentCondition === "C" ? conditionCFinalRepairChoiceRef.current : "not_applicable",
+            total_repair_gate_dwell_ms: currentCondition === "C" ? Math.round(conditionCTotalRepairGateDwellMsRef.current) : 0,
+            pure_speech_duration_ms: currentCondition === "C" && voiceDurationMs ? Math.max(0, Math.round(voiceDurationMs - conditionCTotalRepairGateDwellMsRef.current)) : 0,
+            final_transcript: currentCondition === "C" ? messageContent : "",
+            final_audio_file_path: "",
+            auto_submitted: trigger === "auto_vad" ? 1 : 0,
         },
       );
 
@@ -1321,6 +1427,11 @@ export default function ChatPage() {
         pendingVoiceDurationMsRef.current = null;
         pendingWhisperSttMsRef.current = 0;
         pendingInterruptionCountRef.current = 0;
+        conditionCTurnIdRef.current = null;
+        conditionCVadTriggerCountRef.current = 0;
+        conditionCFinalRepairChoiceRef.current = "not_applicable";
+        conditionCTotalRepairGateDwellMsRef.current = 0;
+
       }
     } catch (err) {
       console.error(err);
@@ -1973,7 +2084,8 @@ export default function ChatPage() {
                   />
                   <button
                     onClick={() => {
-                      if (devPassword === "1234") setIsUnlocked(true);
+                      const configuredPassword = String((config as any).dev_password || "1234");
+                      if (devPassword === configuredPassword) setIsUnlocked(true);
                       else setWarningMessage("開發工具密碼錯誤");
                     }}
                   >
@@ -1982,6 +2094,25 @@ export default function ChatPage() {
                 </div>
               ) : (
                 <>
+                  <div className="rounded border border-white/10 bg-white/5 p-2 text-gray-200 space-y-1">
+                    <div>
+                      受測者：{participantId || "未設定"}
+                    </div>
+                    {participantId && (
+                      <button
+                        onClick={() => {
+                          localStorage.removeItem("participant_id");
+                          setParticipantId("");
+                          setParticipantInput("");
+                          setAssignmentInfo(null);
+                          initializeMissions(fallbackFlow);
+                        }}
+                        className="text-blue-300 hover:underline"
+                      >
+                        更換受測者
+                      </button>
+                    )}
+                  </div>
                   <div>
                     分配模式:{" "}
                     {assignmentInfo?.assignment_mode || assignmentMode}
@@ -2042,22 +2173,8 @@ export default function ChatPage() {
               ? `${selectedMission.displayTitle} - ${selectedPhase.phaseLabel}`
               : "實驗介面"}
           </div>
-          <span className="text-xs text-gray-500 font-normal flex items-center gap-2">
-            受測者：{participantId || "未設定"}
-            {participantId && (
-              <button
-                onClick={() => {
-                  localStorage.removeItem("participant_id");
-                  setParticipantId("");
-                  setParticipantInput("");
-                  setAssignmentInfo(null);
-                  initializeMissions(fallbackFlow);
-                }}
-                className="text-blue-600 hover:underline"
-              >
-                更換
-              </button>
-            )}
+          <span className="text-xs text-gray-500 font-normal">
+            {isUnlocked ? "研究工具已解鎖" : ""}
           </span>
         </header>
 
@@ -2252,7 +2369,31 @@ export default function ChatPage() {
               </div>
             )}
 
-            {showHint && currentCondition !== "A" && canInteract && (
+            
+{repairGateOpen && currentCondition === "C" && canInteract && (
+  <div className="absolute -top-32 left-1/2 -translate-x-1/2 bg-white text-gray-800 text-xs p-4 rounded-2xl shadow-xl z-30 border border-blue-200 w-[360px] space-y-3">
+    <div className="font-semibold leading-relaxed">
+      看起來你可能還有話想說。你要繼續說，還是現在送出給 AI？
+    </div>
+    <div className="flex gap-2">
+      <button
+        type="button"
+        onClick={continueConditionCSpeaking}
+        className="flex-1 rounded-xl bg-blue-50 text-blue-700 border border-blue-200 px-3 py-2 font-bold hover:bg-blue-100"
+      >
+        繼續錄音
+      </button>
+      <button
+        type="button"
+        onClick={sendConditionCNow}
+        className="flex-1 rounded-xl bg-blue-600 text-white px-3 py-2 font-bold hover:bg-blue-700"
+      >
+        現在送出
+      </button>
+    </div>
+  </div>
+)}
+        {showHint && currentCondition !== "A" && canInteract && (
               <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-xs py-2 px-5 rounded-full shadow-xl animate-bounce z-20">
                 偵測到停頓，若說完請停止
               </div>

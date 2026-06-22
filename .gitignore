@@ -14,11 +14,27 @@ out/
 # Experiment runtime data
 backend/database/*.db
 backend/database/*.db-journal
+backend/database/*.db-wal
+backend/database/*.db-shm
 backend/database/*.sqlite
 backend/database/*.sqlite3
+backend/database/*.sqlite3-wal
+backend/database/*.sqlite3-shm
 .remote_logs/
 logs/
 *.log
+# Experiment generated files
+backend/database/*.csv
+backend/database/*.jsonl
+backend/database/participant_states/
+analysis_exports_demo/
 
-# Local generated files
+# Patch / notes generated during development
+PATCH_NOTES.md
+apply_*_patch.py
+note.docx
+*.bak
+
+# Local generated / backup files
 *.tmp
+*.bak

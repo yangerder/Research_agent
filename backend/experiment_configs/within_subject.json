@@ -50,12 +50,17 @@
       "title": "餐廳語音",
       "mode": "voice",
       "orders": [
-        "AB",
-        "BA"
+        "ABC",
+        "ACB",
+        "BAC",
+        "BCA",
+        "CAB",
+        "CBA"
       ],
       "condition_labels": {
         "A": "情境 A：激進自動送出",
-        "B": "情境 B：使用者手動送出"
+        "B": "情境 B：使用者手動送出",
+        "C": "情境 C：可修復式 VAD / Repair Gate"
       },
       "max_per_order": 10,
       "phases": [

@@ -1,10 +1,9 @@
 # backend/core/scenario_c.py
-import os
-from groq import Groq
 from utils import counter, logger
 import config
+from core.llm_provider import get_chat_client, get_active_llm_model
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = get_chat_client()
 
 async def handle_chat(req):
     """
@@ -20,7 +19,7 @@ async def handle_chat(req):
             # 這裡加入 req.message，確保摘要包含使用者最後一句話
             summary_messages = req.history + [{"role": "user", "content": req.message}]
             summary_completion = client.chat.completions.create(
-                model=config.MODEL_NAME,
+                model=get_active_llm_model(),
                 messages=[
                     {
                         "role": "system",
@@ -47,7 +46,7 @@ async def handle_chat(req):
 
     # 正常生成 AI 回覆
     completion = client.chat.completions.create(
-        model=config.MODEL_NAME,
+        model=get_active_llm_model(),
         messages=[
             {"role": "system", "content": config.SYSTEM_PROMPT_ZH},
             *req.history,
@@ -67,7 +66,7 @@ async def handle_chat(req):
     if current_tokens > config.TOKEN_THRESHOLD * config.SUMMARY_THRESHOLD:
         try:
             summary_comp = client.chat.completions.create(
-                model=config.MODEL_NAME,
+                model=get_active_llm_model(),
                 messages=[
                     {
                         "role": "system",

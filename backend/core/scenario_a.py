@@ -1,14 +1,12 @@
 # backend/core/scenario_a.py
-import os
 from utils import logger
-from groq import Groq
-from dotenv import load_dotenv
+
 from utils import counter
 from config import SCENARIO_A_MSG_LIMIT, MODEL_NAME, SYSTEM_PROMPT_ZH
+from core.llm_provider import get_chat_client, get_active_llm_model
 from utils.logger import log_event
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = get_chat_client()
 
 async def handle_chat(req):
     history = req.history
@@ -26,7 +24,7 @@ async def handle_chat(req):
     
     # 修正：模型名稱改由 config 控制
     completion = client.chat.completions.create(
-        model=MODEL_NAME, 
+        model=get_active_llm_model(), 
         messages=messages
     )
     

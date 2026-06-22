@@ -198,7 +198,19 @@ def init_db() -> None:
                 "Client_Roundtrip_ms": "INTEGER DEFAULT 0",
                 "Server_Processing_ms": "INTEGER DEFAULT 0",
                 "Estimated_Network_RTT_ms": "INTEGER DEFAULT 0",
+                "Turn_ID": "TEXT DEFAULT ''",
+                "VAD_Trigger_Count": "INTEGER DEFAULT 0",
+                "Final_Repair_Choice": "TEXT DEFAULT 'not_applicable'",
+                "Total_Repair_Gate_Dwell_ms": "INTEGER DEFAULT 0",
+                "Pure_Speech_Duration_ms": "INTEGER DEFAULT 0",
+                "Final_Transcript": "TEXT DEFAULT ''",
+                "Final_Audio_File_Path": "TEXT DEFAULT ''",
+                "Auto_Submitted": "INTEGER DEFAULT 0",
+                "LLM_Provider": "TEXT DEFAULT ''",
+                "LLM_Model": "TEXT DEFAULT ''",
+                "LLM_Run_Mode": "TEXT DEFAULT ''",
             })
+
             _ensure_columns(conn, "Participants", {
                 "Qualtrics_Response_ID": "TEXT",
                 "Consent_Status": "TEXT DEFAULT 'unknown'",
@@ -567,7 +579,11 @@ def log_action(row: Dict[str, Any]) -> int:
         "Estimated_Network_RTT_ms", "Network_RTT_ms", "LLM_TTFT_ms",
         "LLM_Total_Generation_ms", "Whisper_STT_ms", "Raw_Timing_JSON",
         "User_Input_Length_Chars", "Correction_Count", "STT_Transcript",
-        "Voice_Duration_ms", "Manipulation_Exposure_Flag", "User_Input", "AI_Response"
+        "Voice_Duration_ms", "Manipulation_Exposure_Flag", "User_Input", "AI_Response",
+        "Turn_ID", "VAD_Trigger_Count", "Final_Repair_Choice",
+        "Total_Repair_Gate_Dwell_ms", "Pure_Speech_Duration_ms",
+        "Final_Transcript", "Final_Audio_File_Path", "Auto_Submitted",
+        "LLM_Provider", "LLM_Model", "LLM_Run_Mode"
     ]
     values = {field: row.get(field, row.get(field.lower(), None)) for field in fields}
     values["Task_Type"] = values.get("Task_Type") or "Platform"
@@ -576,7 +592,14 @@ def log_action(row: Dict[str, Any]) -> int:
     values["Turn_Count"] = int(values.get("Turn_Count") or 0)
     values["Input_Method"] = values.get("Input_Method") or "Text"
     values["Trigger_Type"] = values.get("Trigger_Type") or "manual"
-    for k in ["Prompt_Tokens", "Completion_Tokens", "Interruption_Count", "User_Reengagement_ms", "Client_Roundtrip_ms", "Server_Processing_ms", "Estimated_Network_RTT_ms", "Network_RTT_ms", "LLM_TTFT_ms", "LLM_Total_Generation_ms", "Whisper_STT_ms", "User_Input_Length_Chars", "Correction_Count", "Voice_Duration_ms", "Manipulation_Exposure_Flag"]:
+    values["Turn_ID"] = values.get("Turn_ID") or ""
+    values["Final_Repair_Choice"] = values.get("Final_Repair_Choice") or "not_applicable"
+    values["Final_Transcript"] = values.get("Final_Transcript") or ""
+    values["Final_Audio_File_Path"] = values.get("Final_Audio_File_Path") or ""
+    values["LLM_Provider"] = values.get("LLM_Provider") or ""
+    values["LLM_Model"] = values.get("LLM_Model") or ""
+    values["LLM_Run_Mode"] = values.get("LLM_Run_Mode") or ""
+    for k in ["Prompt_Tokens", "Completion_Tokens", "Interruption_Count", "User_Reengagement_ms", "Client_Roundtrip_ms", "Server_Processing_ms", "Estimated_Network_RTT_ms", "Network_RTT_ms", "LLM_TTFT_ms", "LLM_Total_Generation_ms", "Whisper_STT_ms", "User_Input_Length_Chars", "Correction_Count", "Voice_Duration_ms", "Manipulation_Exposure_Flag", "VAD_Trigger_Count", "Total_Repair_Gate_Dwell_ms", "Pure_Speech_Duration_ms", "Auto_Submitted"]:
         try:
             values[k] = int(float(values.get(k) or 0))
         except Exception:

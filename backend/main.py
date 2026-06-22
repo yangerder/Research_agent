@@ -24,6 +24,7 @@ from utils import logger
 from experiment import assignment as assignment_manager
 from experiment import state as state_manager
 from experiment import database
+from core.llm_provider import get_active_llm_provider, get_active_llm_model, get_active_llm_mode
 
 load_dotenv()
 
@@ -73,6 +74,15 @@ class ChatRequest(BaseModel):
     voice_duration_ms: Optional[float] = None
     whisper_stt_ms: Optional[float] = None
     interruption_count: Optional[int] = 0
+    turn_id: Optional[str] = None
+    vad_trigger_count: Optional[int] = 0
+    final_repair_choice: Optional[str] = "not_applicable"
+    total_repair_gate_dwell_ms: Optional[float] = 0
+    pure_speech_duration_ms: Optional[float] = 0
+    final_transcript: Optional[str] = ""
+    final_audio_file_path: Optional[str] = ""
+    auto_submitted: Optional[int] = 0
+
 
 
 class MigrationLog(BaseModel):
@@ -217,6 +227,18 @@ class ActionLogRequest(BaseModel):
     manipulation_exposure_flag: bool = False
     user_input: Optional[str] = ""
     ai_response: Optional[str] = ""
+    turn_id: Optional[str] = ""
+    vad_trigger_count: int = 0
+    final_repair_choice: str = "not_applicable"
+    total_repair_gate_dwell_ms: int = 0
+    pure_speech_duration_ms: int = 0
+    final_transcript: Optional[str] = ""
+    final_audio_file_path: Optional[str] = ""
+    auto_submitted: int = 0
+    llm_provider: str = ""
+    llm_model: str = ""
+    llm_run_mode: str = ""
+
 
 
 class BaselineUpdateRequest(BaseModel):
@@ -445,6 +467,18 @@ async def chat(req: ChatRequest):
             ) else 0,
             "User_Input": req.message,
             "AI_Response": last_assistant,
+                "Turn_ID": req.turn_id or "",
+                "VAD_Trigger_Count": int(req.vad_trigger_count or 0),
+                "Final_Repair_Choice": req.final_repair_choice or "not_applicable",
+                "Total_Repair_Gate_Dwell_ms": int(round(req.total_repair_gate_dwell_ms or 0)),
+                "Pure_Speech_Duration_ms": int(round(req.pure_speech_duration_ms or 0)),
+                "Final_Transcript": req.final_transcript or ((req.message or "") if (req.input_method == "Voice" or req.trigger_type in {"auto_vad", "manual_voice_submit"}) else ""),
+                "Final_Audio_File_Path": req.final_audio_file_path or "",
+                "Auto_Submitted": int(req.auto_submitted or (1 if req.trigger_type == "auto_vad" else 0)),
+                "LLM_Provider": get_active_llm_provider(),
+                "LLM_Model": get_active_llm_model(),
+                "LLM_Run_Mode": get_active_llm_mode(),
+
         })
 
         if isinstance(data, dict):
@@ -478,11 +512,23 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
         stt_start = time.perf_counter() * 1000
         with open(temp_path, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                file=(Path(temp_path).name, audio_file.read()),
-                model="whisper-large-v3-turbo",
-                response_format="text",
-            )
+            audio_bytes = audio_file.read()
+            try:
+                transcription = client.audio.transcriptions.create(
+                    file=(Path(temp_path).name, audio_bytes),
+                    model=getattr(app_config, "STT_MODEL_NAME", "whisper-large-v3-turbo"),
+                    response_format="text",
+                    language=getattr(app_config, "STT_LANGUAGE", "zh"),
+                    prompt=getattr(app_config, "STT_PROMPT_ZH_TW", "請使用繁體中文逐字轉錄。"),
+                )
+            except TypeError:
+                # Older SDK/API compatibility: keep original Whisper output, but
+                # fall back if language/prompt is not accepted.
+                transcription = client.audio.transcriptions.create(
+                    file=(Path(temp_path).name, audio_bytes),
+                    model=getattr(app_config, "STT_MODEL_NAME", "whisper-large-v3-turbo"),
+                    response_format="text",
+                )
         stt_end = time.perf_counter() * 1000
 
         return {"text": transcription, "whisper_stt_ms": round(stt_end - stt_start, 2)}
@@ -497,6 +543,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @app.get("/config")
 async def get_config():
     from config import (
+        DEV_PASSWORD,
         SCENARIO_A_ROUND_LIMIT,
         SCENARIO_B_SHOW_HINT,
         TOKEN_THRESHOLD,
@@ -514,6 +561,10 @@ async def get_config():
         "vad_timeout_c": VAD_SILENCE_TIMEOUT_C,
         "vad_threshold": VAD_THRESHOLD,
         "show_hint_b": SCENARIO_B_SHOW_HINT,
+        "dev_password": DEV_PASSWORD,
+        "llm_provider": get_active_llm_provider(),
+        "llm_model": get_active_llm_model(),
+        "llm_run_mode": get_active_llm_mode(),
     }
 
 
@@ -570,10 +621,10 @@ def _apply_url_assignment_override(mode: str, assignment: dict[str, Any], req: E
 
     if mode == "within_subject":
         assignment["text_order"] = _normalize_condition(req.text, {"ABC", "ACB", "BAC", "BCA", "CAB", "CBA"})
-        assignment["voice_order"] = _normalize_condition(req.voice, {"AB", "BA"})
+        assignment["voice_order"] = _normalize_condition(req.voice, {"ABC", "ACB", "BAC", "BCA", "CAB", "CBA"})
     else:
         assignment["text_condition"] = _normalize_condition(req.text, {"A", "B", "C"})
-        assignment["voice_condition"] = _normalize_condition(req.voice, {"A", "B"})
+        assignment["voice_condition"] = _normalize_condition(req.voice, {"A", "B", "C"})
     return assignment
 
 def _build_qualtrics_redirect_url(base_url: str, *, sid: str = "", qid: str = "", study: str = "", status: str = "completed") -> str:
@@ -856,6 +907,17 @@ async def log_action_log(req: ActionLogRequest):
         "Manipulation_Exposure_Flag": int(bool(row.get("manipulation_exposure_flag"))),
         "User_Input": row.get("user_input"),
         "AI_Response": row.get("ai_response"),
+        "Turn_ID": row.get("turn_id"),
+        "VAD_Trigger_Count": row.get("vad_trigger_count"),
+        "Final_Repair_Choice": row.get("final_repair_choice"),
+        "Total_Repair_Gate_Dwell_ms": row.get("total_repair_gate_dwell_ms"),
+        "Pure_Speech_Duration_ms": row.get("pure_speech_duration_ms"),
+        "Final_Transcript": row.get("final_transcript"),
+        "Final_Audio_File_Path": row.get("final_audio_file_path"),
+        "Auto_Submitted": row.get("auto_submitted"),
+        "LLM_Provider": row.get("llm_provider") or get_active_llm_provider(),
+        "LLM_Model": row.get("llm_model") or get_active_llm_model(),
+        "LLM_Run_Mode": row.get("llm_run_mode") or get_active_llm_mode(),
     })
     return {"status": "action log saved"}
 
