@@ -1,13 +1,19 @@
 {
   "_note": "教授主要改這個檔案即可。請保持 JSON 格式：字串要用雙引號，true/false 要小寫，不要加註解逗號。",
   "dev_password": "1234",
-  "experiment_assignment_mode": "between_subject",
+  "experiment_assignment_mode": "single_study",
   "qualtrics_allow_url_condition_override": true,
   "qualtrics_require_condition_in_url": false,
   "between_subject_text_max_per_condition": 20,
   "between_subject_voice_max_per_condition": 20,
   "within_subject_text_max_per_order": 10,
   "within_subject_voice_max_per_order": 10,
+  "between_subject_randomize_task_order": true,
+  "single_study_text_total_max": 60,
+  "single_study_voice_total_max": 60,
+  "single_study_text_max_per_condition": 20,
+  "single_study_voice_max_per_condition": 20,
+  "qualtrics_use_rid_only": true,
   "llm_run_mode": "pilot",
   "pilot_llm_provider": "groq",
   "formal_llm_provider": "openai",
@@ -25,7 +31,8 @@
   "vad_threshold": 0.015,
   "vad_silence_timeout_a": 1.0,
   "vad_silence_timeout_b": 1.0,
-  "vad_silence_timeout_c": 1.0,
+  "vad_silence_timeout_c": 1.5,
   "system_prompt_zh": "你是繁體中文 AI 助手。\n無論使用者輸入中文、英文、日文或語音轉文字結果如何，你都必須使用繁體中文回答。\n請不要使用英文回答，除非使用者明確要求翻譯或要求英文。\n回答要自然、清楚，符合台灣使用者習慣。",
-  "summary_prompt_zh": "請整理目前對話中需要延續到下一段對話的重要資訊。\n請一定使用繁體中文。\n不要使用英文。\n請用繁體中文條列。\n最多 8 點，每點 20 字以內。\n\n必須優先保留：\n1. 住宿位置\n2. 預算\n3. 必去景點\n4. 同行者限制\n5. 飲食限制\n6. 使用者偏好\n7. 已決定行程\n8. 後續注意事項"
+  "summary_prompt_zh": "請整理目前對話中需要延續到下一段對話的重要資訊。\n請一定使用繁體中文。\n不要使用英文。\n請用繁體中文條列。\n最多 8 點，每點 20 字以內。\n\n必須優先保留：\n1. 住宿位置\n2. 預算\n3. 必去景點\n4. 同行者限制\n5. 飲食限制\n6. 使用者偏好\n7. 已決定行程\n8. 後續注意事項",
+  "repair_gate_max_per_turn": 1
 }

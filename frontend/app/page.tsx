@@ -54,9 +54,11 @@ interface Chat {
 
 interface QualtricsContext extends QualtricsStartPayload {
   enabled: boolean;
+  rid: string;
   sid: string;
   qid: string;
   study: string;
+  from_survey?: string;
   redirect_url?: string;
 }
 
@@ -192,16 +194,18 @@ const fallbackFlow: FlowPhaseConfig[] = [
 ];
 
 
-const QUALTRICS_REQUIRED_PARAMS = ["sid", "qid", "consent", "study", "token"] as const;
+const QUALTRICS_REQUIRED_PARAMS = ["consent", "study", "token"] as const;
 const QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS = ["text", "voice", "order"] as const;
 
 function parseQualtricsParams(): { context: QualtricsContext | null; error: string | null; hasQualtricsParams: boolean } {
   if (typeof window === "undefined") return { context: null, error: null, hasQualtricsParams: false };
   const params = new URLSearchParams(window.location.search);
-  const hasQualtricsParams = [...QUALTRICS_REQUIRED_PARAMS, ...QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS].some((key) => params.has(key)) || params.has("redirect_url") || params.has("post_survey_url") || params.has("return_url");
+  const hasQualtricsParams = [...QUALTRICS_REQUIRED_PARAMS, ...QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS].some((key) => params.has(key)) || params.has("rid") || params.has("sid") || params.has("qid") || params.has("from") || params.has("redirect_url") || params.has("post_survey_url") || params.has("return_url");
   if (!hasQualtricsParams) return { context: null, error: null, hasQualtricsParams: false };
 
   const missing = QUALTRICS_REQUIRED_PARAMS.filter((key) => !params.get(key)?.trim());
+  const rid = (params.get("rid") || params.get("sid") || "").trim();
+  if (!rid) missing.push("rid" as any);
   if (missing.length > 0) {
     return { context: null, error: `Qualtrics URL 缺少必要參數：${missing.join(", ")}`, hasQualtricsParams: true };
   }
@@ -225,16 +229,20 @@ function parseQualtricsParams(): { context: QualtricsContext | null; error: stri
   }
 
   const redirectUrl = params.get("redirect_url") || params.get("post_survey_url") || params.get("return_url") || "";
+  const fromSurvey = params.get("from") || params.get("from_survey") || "";
   const context: QualtricsContext = {
     enabled: true,
-    sid: params.get("sid")!.trim(),
-    qid: params.get("qid")!.trim(),
+    rid,
+    sid: rid,
+    qid: params.get("qid")?.trim() || rid,
     consent,
     study: params.get("study")!.trim(),
     text: text || undefined,
     voice: voice || undefined,
     order: params.get("order")?.trim() || undefined,
     token: params.get("token")!.trim(),
+    from_survey: fromSurvey || undefined,
+    from_: fromSurvey || undefined,
     redirect_url: redirectUrl,
     post_survey_url: redirectUrl,
     device_browser: typeof navigator !== "undefined" ? navigator.userAgent : "",
@@ -245,13 +253,74 @@ function parseQualtricsParams(): { context: QualtricsContext | null; error: stri
 function buildQualtricsReturnUrl(baseUrl: string, context: QualtricsContext, status = "completed") {
   if (!baseUrl) return "";
   const url = new URL(baseUrl, window.location.href);
-  url.searchParams.set("sid", context.sid);
-  url.searchParams.set("qid", context.qid);
-  url.searchParams.set("study", context.study);
-  url.searchParams.set("task_done", "1");
+  url.searchParams.set("rid", context.rid || context.sid);
   url.searchParams.set("completion", status);
   return url.toString();
 }
+
+
+const getTextRoundGuidance = (taskDocId: string, nextRound: number) => {
+  const guidance: Record<string, string[]> = {
+    text_travel_phase_1: [
+      "第 1 輪：請 AI 先產生關西 5 天 4 夜的初版行程。",
+      "第 2 輪：補充同行人數、預算與行程不要太趕的需求。",
+      "第 3 輪：請 AI 檢查 USJ、京都、奈良是否都有合理安排。",
+      "第 4 輪：補充朋友 A 膝蓋不好，請 AI 降低步行量與轉車負擔。",
+      "第 5 輪：補充朋友 B 不吃牛肉，並請 AI 加入動漫、咖啡廳、夜景或在地小吃偏好。",
+      "第 6 輪：請 AI 統整目前版本，確認每天安排、交通、餐飲與預算是否合理。",
+    ],
+    text_travel_phase_2: [
+      "第 1 輪：請 AI 建立大阪 6 個住宿區域的比較表。",
+      "第 2 輪：請 AI 補充各區前往 USJ、京都、奈良的交通便利性。",
+      "第 3 輪：請 AI 從朋友 A 膝蓋不好、少走路、少轉車的角度重新排序。",
+      "第 4 輪：請 AI 給出最推薦的住宿區域前 3 名，並說明原因。",
+    ],
+    text_travel_phase_3: [
+      "第 1 輪：告訴 AI 朋友 A 膝蓋狀況更嚴重，需要進一步減少步行。",
+      "第 2 輪：告訴 AI 朋友 B 臨時不參加，因此不吃牛肉不再是必要限制。",
+      "第 3 輪：請 AI 在保留 USJ、京都、奈良的前提下重新調整每天行程。",
+      "第 4 輪：請 AI 特別降低轉車、長距離步行與太趕的安排。",
+      "第 5 輪：請 AI 重新檢查住宿、餐飲、交通與預算是否仍合理。",
+      "第 6 輪：請 AI 輸出最終版完整行程，包含每天景點、交通、餐飲與膝蓋照顧方式。",
+    ],
+    text_travel_phase_a: [
+      "第 1 輪：請 AI 先產生關西 5 天 4 夜的初版行程。",
+      "第 2 輪：補充住宿難波、預算與行程不要太趕的需求。",
+      "第 3 輪：請 AI 檢查 USJ、京都、奈良是否都有安排。",
+      "第 4 輪：提醒 AI 同行者不能走太多路，請它降低步行量。",
+      "第 5 輪：提醒 AI 不吃牛肉與動漫、咖啡廳、夜景、在地小吃偏好。",
+      "第 6 輪：請 AI 統整目前版本，確認是否合理。",
+    ],
+    text_travel_phase_b: [
+      "第 1 輪：請 AI 建立大阪住宿區域比較表。",
+      "第 2 輪：請 AI 補充每個區域的交通、價格與夜生活差異。",
+      "第 3 輪：請 AI 從少走路、少轉車與景點交通角度重新分析。",
+      "第 4 輪：請 AI 給出最推薦的住宿區域前 3 名。",
+    ],
+    text_travel_phase_c: [
+      "第 1 輪：告訴 AI 同行者膝蓋更不舒服，需要大幅減少步行。",
+      "第 2 輪：告訴 AI 原本不吃牛肉的人不去了，飲食限制取消。",
+      "第 3 輪：請 AI 保留 USJ、京都、奈良並重新安排。",
+      "第 4 輪：請 AI 輸出調整後的完整行程與理由。",
+    ],
+  };
+  const items = guidance[taskDocId] || [];
+  return items[Math.max(0, nextRound - 1)] || "請依照右側任務文件，和 AI 完成這一輪討論。";
+};
+
+const getTextTransitionMessage = (phase?: ExperimentPhase | null) => {
+  const taskDocId = phase?.taskDocId || "";
+  if (taskDocId.includes("phase_1") || taskDocId.endsWith("phase_a")) {
+    return "初步行程討論已完成。接下來，請把注意力轉到住宿區域與交通便利性，準備開始住宿規劃比較。";
+  }
+  if (taskDocId.includes("phase_2") || taskDocId.endsWith("phase_b")) {
+    return "住宿比較已完成。接下來旅遊條件會發生變化：朋友的狀況需要重新調整整份行程。";
+  }
+  if (taskDocId.includes("phase_3") || taskDocId.endsWith("phase_c")) {
+    return "文字旅遊任務已完成。接下來請依照指示填寫文字任務問卷。";
+  }
+  return "這個階段已完成。請按下繼續，進入下一個階段。";
+};
 
 export default function ChatPage() {
   const [participantId, setParticipantId] = useState("");
@@ -268,6 +337,8 @@ export default function ChatPage() {
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [taskDoc, setTaskDoc] = useState("載入任務文件中...");
+  const [dismissedRoundPromptKey, setDismissedRoundPromptKey] = useState<string | null>(null);
+  const [typewriterText, setTypewriterText] = useState("");
 
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -305,6 +376,7 @@ export default function ChatPage() {
   const conditionCRepairGateStartMsRef = useRef<number | null>(null);
   const conditionCTotalRepairGateDwellMsRef = useRef(0);
   const conditionCFinalRepairChoiceRef = useRef("not_applicable");
+  const conditionCRepairGateShownThisTurnRef = useRef(0);
 
   const [migrationStartTime, setMigrationStartTime] = useState<number | null>(
     null,
@@ -318,8 +390,9 @@ export default function ChatPage() {
     token_threshold: 300,
     vad_timeout_a: 1.0,
     vad_timeout_b: 2.0,
-    vad_timeout_c: 0.7,
+    vad_timeout_c: 1.5,
     vad_threshold: 0.015,
+    repair_gate_max_per_turn: 1,
     show_hint_b: true,
     dev_password: "1234",
   });
@@ -388,6 +461,30 @@ export default function ChatPage() {
     () => countPhaseRounds(selectedPhase, selectedMission),
     [selectedPhase, selectedMission],
   );
+  const isFixedTextRoundPhase = Boolean(
+    selectedPhase?.mode === "text" && selectedPhase.minRounds > 0,
+  );
+  const isTextRoundLimitReached = Boolean(
+    isFixedTextRoundPhase && phaseRounds >= (selectedPhase?.minRounds || 0),
+  );
+  const nextTextRound = Math.min(
+    phaseRounds + 1,
+    selectedPhase?.minRounds || phaseRounds + 1,
+  );
+  const roundPromptKey = selectedPhase
+    ? `${selectedPhase.id}:${nextTextRound}:${phaseRounds}`
+    : "";
+  const showTextRoundPrompt = Boolean(
+    isFixedTextRoundPhase &&
+      selectedMission?.status === "active" &&
+      !isTextRoundLimitReached &&
+      roundPromptKey &&
+      dismissedRoundPromptKey !== roundPromptKey,
+  );
+  const textRoundGuidance = selectedPhase
+    ? getTextRoundGuidance(selectedPhase.taskDocId, nextTextRound)
+    : "";
+  const textTransitionMessage = getTextTransitionMessage(selectedPhase);
   const canCompletePhase = Boolean(
     selectedMission &&
     selectedPhase &&
@@ -408,9 +505,73 @@ export default function ChatPage() {
     selectedMission.status === "active" &&
     (selectedPhase.mode === "text" || selectedPhase.mode === "voice") &&
     isViewingCurrentMission &&
+    !isTextRoundLimitReached &&
     !isLoading &&
     !isTranscribing,
   );
+
+  const buildSurveyUrl = (rawUrl: string) => {
+    const rid = (qualtricsContext?.rid || qualtricsContext?.sid || participantId || "").trim();
+
+    const replaced = rawUrl
+      .replace(/\{\s*rid\s*\}/gi, encodeURIComponent(rid))
+      .replace(/\{\s*pid\s*\}/gi, encodeURIComponent(rid))
+      .replace(/\{\s*subject_id\s*\}/gi, encodeURIComponent(rid))
+      .replace(/\{\s*sid\s*\}/gi, encodeURIComponent(rid))
+      .replace(/\{\s*qid\s*\}/gi, encodeURIComponent(rid));
+
+    try {
+      const url = new URL(replaced, window.location.href);
+      if (rid) url.searchParams.set("rid", rid);
+      url.searchParams.delete("PID");
+      url.searchParams.delete("pid");
+      url.searchParams.delete("sid");
+      url.searchParams.delete("qid");
+      url.searchParams.delete("study");
+      url.searchParams.delete("task");
+      return url.toString();
+    } catch {
+      return replaced;
+    }
+  };
+
+  const splitUrlTrailingPunctuation = (value: string) => {
+    const match = value.match(/^(.+?)([.,，。)）\]]*)$/);
+    if (!match) return { urlPart: value, suffix: "" };
+    return { urlPart: match[1], suffix: match[2] || "" };
+  };
+
+  const getFirstTaskDocUrl = (text: string) => {
+    const match = text.match(/https?:\/\/[^\s]+/);
+    if (!match) return "";
+    const { urlPart } = splitUrlTrailingPunctuation(match[0]);
+    return buildSurveyUrl(urlPart);
+  };
+
+  const renderTaskDocWithLinks = (text: string) => {
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    return text.split(urlRegex).map((part, index) => {
+      if (!part.match(urlRegex)) {
+        return <React.Fragment key={index}>{part}</React.Fragment>;
+      }
+
+      const { urlPart, suffix } = splitUrlTrailingPunctuation(part);
+      const href = buildSurveyUrl(urlPart);
+      return (
+        <React.Fragment key={index}>
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 underline break-all hover:text-blue-800 font-medium"
+          >
+            {href}
+          </a>
+          {suffix}
+        </React.Fragment>
+      );
+    });
+  };
 
   useEffect(() => {
     try {
@@ -435,7 +596,7 @@ export default function ChatPage() {
       const savedMode = localStorage.getItem(
         "assignment_mode",
       ) as AssignmentMode | null;
-      if (savedMode === "between_subject" || savedMode === "within_subject") {
+      if (savedMode === "between_subject" || savedMode === "within_subject" || savedMode === "single_study") {
         setAssignmentMode(savedMode);
       }
 
@@ -478,6 +639,53 @@ export default function ChatPage() {
         );
       });
   }, [selectedPhase?.taskDocId]);
+
+  useEffect(() => {
+    if (!participantId || !selectedMission || !selectedPhase || !taskDoc) return;
+    if (selectedMission.status !== "active") return;
+    if ((qualtricsContext?.from_survey || (qualtricsContext as any)?.from_ || "").trim()) return;
+
+    const isQuestionnairePhase =
+      selectedPhase.taskDocId.includes("questionnaire") ||
+      selectedPhase.title.includes("問卷");
+    if (!isQuestionnairePhase) return;
+
+    const surveyUrl = getFirstTaskDocUrl(taskDoc);
+    if (!surveyUrl) return;
+
+    const storageKey = `survey_auto_redirect_${participantId}_${selectedPhase.id}`;
+    try {
+      if (sessionStorage.getItem(storageKey) === "1") return;
+      sessionStorage.setItem(storageKey, "1");
+    } catch {}
+
+    setWarningMessage("3 秒後將自動開啟問卷。若沒有跳轉，請點擊右側任務文件中的問卷連結。");
+    const timer = window.setTimeout(() => {
+      window.location.assign(surveyUrl);
+    }, 3000);
+
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantId, selectedMission?.status, selectedPhase?.id, selectedPhase?.taskDocId, selectedPhase?.title, taskDoc, qualtricsContext?.from_survey]);
+
+  useEffect(() => {
+    if (!isTextRoundLimitReached || !textTransitionMessage) {
+      setTypewriterText("");
+      return;
+    }
+
+    setTypewriterText("");
+    let index = 0;
+    const timer = window.setInterval(() => {
+      index += 1;
+      setTypewriterText(textTransitionMessage.slice(0, index));
+      if (index >= textTransitionMessage.length) {
+        window.clearInterval(timer);
+      }
+    }, 38);
+
+    return () => window.clearInterval(timer);
+  }, [isTextRoundLimitReached, selectedPhase?.id, textTransitionMessage]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -881,6 +1089,16 @@ const openConditionCRepairGate = async (silenceDurationMs: number) => {
   const recorder = mediaRecorderRef.current;
   if (!recorder || recorder.state === "inactive") return;
 
+  const repairGateMaxPerTurn = Math.max(
+    1,
+    Number((config as any).repair_gate_max_per_turn ?? 1) || 1,
+  );
+  if (conditionCRepairGateShownThisTurnRef.current >= repairGateMaxPerTurn) {
+    silenceStartRef.current = null;
+    return;
+  }
+
+  conditionCRepairGateShownThisTurnRef.current += 1;
   conditionCVadTriggerCountRef.current += 1;
   conditionCRepairGateStartMsRef.current = performance.now();
   repairGateOpenRef.current = true;
@@ -1012,6 +1230,11 @@ const startVAD = (stream: MediaStream) => {
         if (currentCondition === "C") {
           void openConditionCRepairGate(silenceDurationMs);
           silenceStartRef.current = null;
+        } else if (currentCondition === "B") {
+          // Voice B is pure manual control: never show a silence hint,
+          // never pause, and never auto-submit because of silence.
+          silenceStartRef.current = null;
+          setShowHint(false);
         } else {
           setShowHint(true);
           if (!silenceHintLoggedRef.current) {
@@ -1050,6 +1273,7 @@ const startRecording = async () => {
       conditionCTotalRepairGateDwellMsRef.current = 0;
       conditionCFinalRepairChoiceRef.current = "not_applicable";
       conditionCRepairGateStartMsRef.current = null;
+      conditionCRepairGateShownThisTurnRef.current = 0;
       repairGateOpenRef.current = false;
       setRepairGateOpen(false);
 
@@ -1431,6 +1655,7 @@ const startRecording = async () => {
         conditionCVadTriggerCountRef.current = 0;
         conditionCFinalRepairChoiceRef.current = "not_applicable";
         conditionCTotalRepairGateDwellMsRef.current = 0;
+        conditionCRepairGateShownThisTurnRef.current = 0;
 
       }
     } catch (err) {
@@ -1711,6 +1936,7 @@ const startRecording = async () => {
     try {
       const res = await completeExperiment({
         participant_id: participantId,
+        rid: context?.rid || context?.sid || participantId,
         sid: context?.sid || participantId,
         qid: context?.qid || null,
         study: context?.study || null,
@@ -1739,6 +1965,19 @@ const startRecording = async () => {
       setWarningMessage("實驗已完成。資料已寫入 SQLite。");
       setIsCompletingExperiment(false);
     }
+  };
+
+  const getSurveyReturnFromContext = () => {
+    return (qualtricsContext?.from_survey || (qualtricsContext as any)?.from_ || "").trim();
+  };
+
+  const currentQuestionnaireReturnMatches = () => {
+    if (!selectedPhase) return false;
+    const fromSurvey = getSurveyReturnFromContext();
+    if (!fromSurvey) return false;
+    if (fromSurvey === "text_survey") return selectedPhase.taskDocId.includes("text_questionnaire");
+    if (fromSurvey === "voice_survey") return selectedPhase.taskDocId.includes("voice_questionnaire");
+    return false;
   };
 
   const completeCurrentPhase = async () => {
@@ -1890,6 +2129,38 @@ const startRecording = async () => {
     }
   };
 
+  useEffect(() => {
+    if (!participantId || !selectedMission || !selectedPhase || selectedMission.status !== "active") return;
+    if (!currentQuestionnaireReturnMatches()) return;
+
+    const fromSurvey = getSurveyReturnFromContext();
+    const storageKey = `survey_return_completed_${participantId}_${selectedPhase.id}_${fromSurvey}`;
+    try {
+      if (sessionStorage.getItem(storageKey) === "1") return;
+      sessionStorage.setItem(storageKey, "1");
+    } catch {}
+
+    setWarningMessage("問卷完成，正在返回下一階段...");
+    const timer = window.setTimeout(() => {
+      void completeCurrentPhase().then(() => {
+        setQualtricsContext((prev) =>
+          prev ? ({ ...prev, from_survey: undefined, from_: undefined } as QualtricsContext) : prev,
+        );
+        try {
+          const current = localStorage.getItem("qualtrics_context");
+          if (current) {
+            const parsed = JSON.parse(current);
+            delete parsed.from_survey;
+            delete parsed.from_;
+            localStorage.setItem("qualtrics_context", JSON.stringify(parsed));
+          }
+        } catch {}
+      });
+    }, 600);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [participantId, selectedMission?.id, selectedMission?.status, selectedPhase?.id, selectedPhase?.taskDocId, qualtricsContext?.from_survey]);
+
   const showLoadingBubble = isLoading || isTranscribing;
   const selectedMissionStatusText =
     selectedMission?.status === "completed"
@@ -1905,7 +2176,7 @@ const startRecording = async () => {
           <div className="w-full max-w-lg bg-white rounded-3xl shadow-2xl p-8 border border-red-100">
             <h2 className="text-xl font-bold text-red-700 mb-3">Qualtrics 入口錯誤</h2>
             <p className="text-sm text-gray-700 leading-relaxed mb-4">{qualtricsEntryError}</p>
-            <p className="text-xs text-gray-500">請確認 URL 至少包含 sid、qid、consent、study、token，且 consent=yes。text / voice / order 可以省略，省略時由後端隨機分配。</p>
+            <p className="text-xs text-gray-500">請確認 URL 至少包含 rid、consent、study、token，且 consent=yes。text / voice / order 可以省略，省略時由後端隨機分配。</p>
           </div>
         </div>
       )}
@@ -1918,7 +2189,7 @@ const startRecording = async () => {
             </h2>
             <p className="text-sm text-gray-500 mb-6">
               請輸入研究者提供的編號，例如
-              P001、P002。這個編號只會用來區分實驗資料。
+              P001、P002，或 Qualtrics ResponseID。這個編號只會用來區分實驗資料。
             </p>
 
             <input
@@ -1947,6 +2218,9 @@ const startRecording = async () => {
               </option>
               <option value="within_subject">
                 人少版：文字任務 1/2/3，語音任務 1/2，順序平衡
+              </option>
+              <option value="single_study">
+                語音文字分開版：每位受測者只做文字或語音其中一種
               </option>
             </select>
 
@@ -2139,6 +2413,27 @@ const startRecording = async () => {
                     Token: {debugData.tokens}/{config.token_threshold}
                   </div>
                   <div>音量: {volume.toFixed(4)}</div>
+                  {(phase0TypingResult || phase0SpeechResult) && (
+                    <div className="rounded border border-white/10 bg-white/5 p-2 text-gray-200 space-y-1">
+                      <div className="text-green-300 font-bold">Phase 0 指標</div>
+                      {phase0TypingResult && (
+                        <>
+                          <div>中文 CPM: {phase0TypingResult.cpm}</div>
+                          <div>WPM: {phase0TypingResult.wpm}</div>
+                          <div>打字時間: {Math.round(phase0TypingResult.durationMs / 1000)} 秒</div>
+                          <div>正確率: {phase0TypingResult.accuracy}%</div>
+                        </>
+                      )}
+                      {phase0SpeechResult && (
+                        <>
+                          <div>Speech Ratio: {phase0SpeechResult.speechRatio}</div>
+                          <div>語音時間: {Math.round(phase0SpeechResult.durationMs / 1000)} 秒</div>
+                          <div>Voice Frames: {phase0SpeechResult.voiceFrames}</div>
+                          <div>Silence Frames: {phase0SpeechResult.silenceFrames}</div>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <div>
                     中斷恢復追蹤:{" "}
                     {lastInterruptionAtRef.current ? "等待恢復" : "無"}
@@ -2177,6 +2472,28 @@ const startRecording = async () => {
             {isUnlocked ? "研究工具已解鎖" : ""}
           </span>
         </header>
+
+        {showTextRoundPrompt && (
+          <div className="shrink-0 border-b bg-blue-50/95 backdrop-blur-md px-4 py-3 md:px-6 animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="mx-auto flex max-w-3xl items-start justify-between gap-4 rounded-2xl border border-blue-100 bg-white/80 px-4 py-3 shadow-sm">
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-blue-600 mb-1">
+                  本輪討論提示｜第 {nextTextRound} / {selectedPhase?.minRounds || 0} 輪
+                </div>
+                <div className="text-sm text-blue-950 leading-relaxed font-semibold">
+                  {textRoundGuidance}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDismissedRoundPromptKey(roundPromptKey)}
+                className="shrink-0 rounded-full border border-blue-200 bg-white px-3 py-1 text-xs font-bold text-blue-700 hover:bg-blue-100"
+              >
+                關閉
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6">
           <div className="max-w-3xl mx-auto space-y-6">
@@ -2224,11 +2541,16 @@ const startRecording = async () => {
                     送出打字測試
                   </button>
                   {phase0TypingResult && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                      <InfoRow label="中文 CPM" value={`${phase0TypingResult.cpm}`} />
-                      <InfoRow label="WPM" value={`${phase0TypingResult.wpm}`} />
-                      <InfoRow label="時間" value={`${Math.round(phase0TypingResult.durationMs / 1000)} 秒`} />
-                      <InfoRow label="正確率" value={`${phase0TypingResult.accuracy}%`} />
+                    <div className="rounded-2xl bg-green-50 border border-green-200 text-green-700 p-4 text-sm font-semibold">
+                      打字基準測試已完成。請繼續完成語音基準測試。
+                      {isUnlocked && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-3">
+                          <InfoRow label="中文 CPM" value={`${phase0TypingResult.cpm}`} />
+                          <InfoRow label="WPM" value={`${phase0TypingResult.wpm}`} />
+                          <InfoRow label="時間" value={`${Math.round(phase0TypingResult.durationMs / 1000)} 秒`} />
+                          <InfoRow label="正確率" value={`${phase0TypingResult.accuracy}%`} />
+                        </div>
+                      )}
                     </div>
                   )}
                 </section>
@@ -2237,7 +2559,7 @@ const startRecording = async () => {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="font-bold text-gray-900">二、語音節奏基準測試</h3>
-                      <p className="text-xs text-gray-500 mt-1">請按下錄音並朗讀下方文字。系統會用 Web Audio RMS 計算語音/靜音 frame ratio。</p>
+                      <p className="text-xs text-gray-500 mt-1">請按下錄音並朗讀下方文字。系統會在背景記錄語音節奏資料。</p>
                     </div>
                     {phase0SpeechResult && <CheckCircle2 size={20} className="text-green-500" />}
                   </div>
@@ -2250,14 +2572,24 @@ const startRecording = async () => {
                     >
                       {phase0Recording ? "停止錄音" : "開始錄音"}
                     </button>
-                    <span className="text-xs text-gray-500">目前音量 RMS：{volume.toFixed(4)}</span>
+                    <span className="text-xs text-gray-500">
+                      {phase0Recording ? "錄音中，朗讀完成後請按停止錄音。" : "請按開始錄音並朗讀上方文字。"}
+                    </span>
+                    {isUnlocked && (
+                      <span className="text-xs text-gray-400">目前音量 RMS：{volume.toFixed(4)}</span>
+                    )}
                   </div>
                   {phase0SpeechResult && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                      <InfoRow label="Speech Ratio" value={`${phase0SpeechResult.speechRatio}`} />
-                      <InfoRow label="時間" value={`${Math.round(phase0SpeechResult.durationMs / 1000)} 秒`} />
-                      <InfoRow label="Voice Frames" value={`${phase0SpeechResult.voiceFrames}`} />
-                      <InfoRow label="Silence Frames" value={`${phase0SpeechResult.silenceFrames}`} />
+                    <div className="rounded-2xl bg-green-50 border border-green-200 text-green-700 p-4 text-sm font-semibold">
+                      語音基準測試已完成。兩項基準測試都完成後，請按右側按鈕進入正式任務。
+                      {isUnlocked && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mt-3">
+                          <InfoRow label="Speech Ratio" value={`${phase0SpeechResult.speechRatio}`} />
+                          <InfoRow label="時間" value={`${Math.round(phase0SpeechResult.durationMs / 1000)} 秒`} />
+                          <InfoRow label="Voice Frames" value={`${phase0SpeechResult.voiceFrames}`} />
+                          <InfoRow label="Silence Frames" value={`${phase0SpeechResult.silenceFrames}`} />
+                        </div>
+                      )}
                     </div>
                   )}
                 </section>
@@ -2360,6 +2692,39 @@ const startRecording = async () => {
 
         <div className="p-4 md:p-6 bg-white border-t">
           <div className="max-w-3xl mx-auto relative">
+            {isTextRoundLimitReached && selectedMission?.status === "active" && (
+              <div className="mb-4 rounded-3xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-blue-50 p-5 shadow-sm animate-in fade-in slide-in-from-bottom-3 duration-500">
+                <div className="flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                    <CheckCircle2 size={22} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold text-emerald-700 mb-2">
+                      已完成本階段 {selectedPhase?.minRounds || 0} 輪對話
+                    </div>
+                    <div className="min-h-[44px] text-sm md:text-base text-gray-800 leading-relaxed font-semibold whitespace-pre-wrap">
+                      {typewriterText}
+                      {typewriterText.length < textTransitionMessage.length && (
+                        <span className="inline-block w-2 h-5 ml-1 bg-gray-700 align-middle animate-pulse" />
+                      )}
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={completeCurrentPhase}
+                        className="rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-blue-700 active:scale-95 transition-all"
+                      >
+                        繼續到下一階段
+                      </button>
+                      <span className="text-xs text-gray-500 self-center">
+                        送出按鈕已鎖定，避免超過固定輪數。
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {warningMessage && (
               <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-red-50 text-red-700 text-xs py-3 px-6 rounded-2xl shadow-xl flex items-center gap-2 z-20 border border-red-200 animate-in fade-in zoom-in duration-300 max-w-[90%]">
                 <AlertCircle size={14} />
@@ -2393,7 +2758,7 @@ const startRecording = async () => {
     </div>
   </div>
 )}
-        {showHint && currentCondition !== "A" && canInteract && (
+        {showHint && currentCondition !== "A" && currentCondition !== "B" && canInteract && (
               <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-xs py-2 px-5 rounded-full shadow-xl animate-bounce z-20">
                 偵測到停頓，若說完請停止
               </div>
@@ -2500,7 +2865,7 @@ const startRecording = async () => {
               : "尚未載入"}
           </div>
           <div className="bg-white border rounded-2xl p-5 text-base leading-8 whitespace-pre-wrap text-gray-700 shadow-sm">
-            {taskDoc}
+            {renderTaskDocWithLinks(taskDoc)}
           </div>
         </div>
 
@@ -2519,7 +2884,9 @@ const startRecording = async () => {
                 label="完成條件"
                 value={
                   selectedPhase.minRounds > 0
-                    ? `至少 ${selectedPhase.minRounds} 輪對話`
+                    ? selectedPhase.mode === "text"
+                      ? `固定 ${selectedPhase.minRounds} 輪對話`
+                      : `至少 ${selectedPhase.minRounds} 輪對話`
                     : "閱讀完成即可繼續"
                 }
               />
@@ -2568,7 +2935,9 @@ const startRecording = async () => {
                       ? "完成此階段，進入下一階段"
                       : selectedPhase.mode === "baseline"
                         ? "請先完成兩項基準測試"
-                        : "尚未完成最低輪數"}
+                        : selectedPhase.mode === "text"
+                          ? "尚未完成固定輪數"
+                          : "尚未完成最低輪數"}
                   </button>
                 </div>
               ) : currentActiveMission ? (

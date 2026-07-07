@@ -4,7 +4,7 @@ export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 export type Scenario = "A" | "B" | "C";
-export type AssignmentMode = "between_subject" | "within_subject";
+export type AssignmentMode = "between_subject" | "within_subject" | "single_study";
 
 export const sendChatMessage = async (
   userId: string,
@@ -47,6 +47,9 @@ export const transcribeAudio = async (audioBlob: Blob): Promise<{ text: string; 
 };
 
 export interface QualtricsStartPayload {
+  rid?: string;
+  from_survey?: string;
+  from_?: string;
   sid?: string;
   qid?: string;
   consent?: string;
@@ -229,6 +232,7 @@ export const logSystemError = async (payload: {
 
 export const completeExperiment = async (payload: {
   participant_id: string;
+  rid?: string | null;
   sid?: string | null;
   qid?: string | null;
   study?: string | null;

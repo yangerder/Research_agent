@@ -24,6 +24,12 @@ _DEFAULTS: dict[str, Any] = {
     "between_subject_voice_max_per_condition": 20,
     "within_subject_text_max_per_order": 10,
     "within_subject_voice_max_per_order": 10,
+    "between_subject_randomize_task_order": True,
+    "single_study_text_total_max": 60,
+    "single_study_voice_total_max": 60,
+    "single_study_text_max_per_condition": 20,
+    "single_study_voice_max_per_condition": 20,
+    "qualtrics_use_rid_only": True,
 
     "llm_run_mode": "pilot",
     "pilot_llm_provider": "groq",
@@ -45,7 +51,8 @@ _DEFAULTS: dict[str, Any] = {
     "vad_threshold": 0.015,
     "vad_silence_timeout_a": 1.0,
     "vad_silence_timeout_b": 1.0,
-    "vad_silence_timeout_c": 0.7,
+    "vad_silence_timeout_c": 1.5,
+    "repair_gate_max_per_turn": 1,
 
     "system_prompt_zh": (
         "你是繁體中文 AI 助手。\n"
@@ -146,6 +153,14 @@ BETWEEN_SUBJECT_VOICE_MAX_PER_CONDITION = _as_int(_get("between_subject_voice_ma
 WITHIN_SUBJECT_TEXT_MAX_PER_ORDER = _as_int(_get("within_subject_text_max_per_order", 10), 10)
 WITHIN_SUBJECT_VOICE_MAX_PER_ORDER = _as_int(_get("within_subject_voice_max_per_order", 10), 10)
 
+BETWEEN_SUBJECT_RANDOMIZE_TASK_ORDER = _as_bool(_get("between_subject_randomize_task_order", True), True)
+
+SINGLE_STUDY_TEXT_TOTAL_MAX = _as_int(_get("single_study_text_total_max", 60), 60)
+SINGLE_STUDY_VOICE_TOTAL_MAX = _as_int(_get("single_study_voice_total_max", 60), 60)
+SINGLE_STUDY_TEXT_MAX_PER_CONDITION = _as_int(_get("single_study_text_max_per_condition", 20), 20)
+SINGLE_STUDY_VOICE_MAX_PER_CONDITION = _as_int(_get("single_study_voice_max_per_condition", 20), 20)
+QUALTRICS_USE_RID_ONLY = _as_bool(_get("qualtrics_use_rid_only", True), True)
+
 # -----------------------------
 # Runtime provider settings
 # -----------------------------
@@ -181,4 +196,5 @@ SCENARIO_B_SHOW_HINT = _as_bool(_get("scenario_b_show_hint", True), True)
 VAD_THRESHOLD = _as_float(_get("vad_threshold", 0.015), 0.015)
 VAD_SILENCE_TIMEOUT_A = _as_float(_get("vad_silence_timeout_a", 1.0), 1.0)
 VAD_SILENCE_TIMEOUT_B = _as_float(_get("vad_silence_timeout_b", 1.0), 1.0)
-VAD_SILENCE_TIMEOUT_C = _as_float(_get("vad_silence_timeout_c", 0.7), 0.7)
+VAD_SILENCE_TIMEOUT_C = _as_float(_get("vad_silence_timeout_c", 1.5), 1.5)
+REPAIR_GATE_MAX_PER_TURN = _as_int(_get("repair_gate_max_per_turn", 1), 1)

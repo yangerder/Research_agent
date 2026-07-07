@@ -96,6 +96,9 @@ class MigrationLog(BaseModel):
 
 class ExperimentStartRequest(BaseModel):
     participant_id: str
+    rid: Optional[str] = None
+    from_survey: Optional[str] = None
+    from_: Optional[str] = None
     assignment_mode: Optional[str] = "between_subject"
     # Qualtrics bridge fields. When any of these are supplied, the backend
     # validates that the full formal-entry parameter set is present.
@@ -113,6 +116,7 @@ class ExperimentStartRequest(BaseModel):
 
 class ExperimentCompleteRequest(BaseModel):
     participant_id: str
+    rid: Optional[str] = None
     qid: Optional[str] = None
     sid: Optional[str] = None
     study: Optional[str] = None
@@ -551,6 +555,8 @@ async def get_config():
         VAD_SILENCE_TIMEOUT_B,
         VAD_SILENCE_TIMEOUT_C,
         VAD_THRESHOLD,
+        REPAIR_GATE_MAX_PER_TURN,
+        EXPERIMENT_ASSIGNMENT_MODE,
     )
 
     return {
@@ -560,6 +566,8 @@ async def get_config():
         "vad_timeout_b": VAD_SILENCE_TIMEOUT_B,
         "vad_timeout_c": VAD_SILENCE_TIMEOUT_C,
         "vad_threshold": VAD_THRESHOLD,
+        "repair_gate_max_per_turn": REPAIR_GATE_MAX_PER_TURN,
+        "experiment_assignment_mode": EXPERIMENT_ASSIGNMENT_MODE,
         "show_hint_b": SCENARIO_B_SHOW_HINT,
         "dev_password": DEV_PASSWORD,
         "llm_provider": get_active_llm_provider(),
@@ -571,11 +579,11 @@ async def get_config():
 
 
 
-QUALTRICS_REQUIRED_PARAMS = ["sid", "qid", "consent", "study", "token"]
+QUALTRICS_REQUIRED_PARAMS = ["consent", "study", "token"]
 QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS = ["text", "voice", "order"]
 
 def _is_qualtrics_start(req: ExperimentStartRequest) -> bool:
-    return any(bool(getattr(req, name, None)) for name in QUALTRICS_REQUIRED_PARAMS + QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS + ["redirect_url", "post_survey_url"])
+    return any(bool(getattr(req, name, None)) for name in QUALTRICS_REQUIRED_PARAMS + QUALTRICS_OPTIONAL_ASSIGNMENT_PARAMS + ["rid", "sid", "qid", "redirect_url", "post_survey_url", "from_survey", "from_"])
 
 def _normalize_condition(value: Optional[str], allowed: set[str]) -> str:
     normalized = str(value or "").strip().upper()
@@ -585,7 +593,7 @@ def _normalize_condition(value: Optional[str], allowed: set[str]) -> str:
 
 def _configured_assignment_mode(requested_mode: Optional[str] = None) -> str:
     mode = (requested_mode or getattr(app_config, "EXPERIMENT_ASSIGNMENT_MODE", "between_subject") or "between_subject").strip()
-    if mode not in {"between_subject", "within_subject"}:
+    if mode not in {"between_subject", "within_subject", "single_study"}:
         return "between_subject"
     return mode
 
@@ -593,7 +601,9 @@ def _assignment_cell(assignment: dict[str, Any]) -> str:
     mode = assignment.get("assignment_mode", "")
     if mode == "within_subject":
         return f"text_order={assignment.get('text_order','')};voice_order={assignment.get('voice_order','')}"
-    return f"text={assignment.get('text_condition','')};voice={assignment.get('voice_condition','')}"
+    if mode == "single_study":
+        return f"study={assignment.get('assigned_study','')};text={assignment.get('text_condition','')};voice={assignment.get('voice_condition','')}"
+    return f"order={assignment.get('task_order','text_first')};text={assignment.get('text_condition','')};voice={assignment.get('voice_condition','')}"
 
 def _apply_url_assignment_override(mode: str, assignment: dict[str, Any], req: ExperimentStartRequest) -> dict[str, Any]:
     """Optionally override backend randomization from URL text/voice/order.
@@ -622,22 +632,37 @@ def _apply_url_assignment_override(mode: str, assignment: dict[str, Any], req: E
     if mode == "within_subject":
         assignment["text_order"] = _normalize_condition(req.text, {"ABC", "ACB", "BAC", "BCA", "CAB", "CBA"})
         assignment["voice_order"] = _normalize_condition(req.voice, {"ABC", "ACB", "BAC", "BCA", "CAB", "CBA"})
+    elif mode == "single_study":
+        if str(req.text or "").strip():
+            assignment["assigned_study"] = "text"
+            assignment["text_condition"] = _normalize_condition(req.text, {"A", "B", "C"})
+            assignment["voice_condition"] = ""
+        elif str(req.voice or "").strip():
+            assignment["assigned_study"] = "voice"
+            assignment["voice_condition"] = _normalize_condition(req.voice, {"A", "B", "C"})
+            assignment["text_condition"] = ""
+        else:
+            assignment["assignment_source"] = "backend_random"
     else:
-        assignment["text_condition"] = _normalize_condition(req.text, {"A", "B", "C"})
-        assignment["voice_condition"] = _normalize_condition(req.voice, {"A", "B", "C"})
+        if str(req.text or "").strip():
+            assignment["text_condition"] = _normalize_condition(req.text, {"A", "B", "C"})
+        if str(req.voice or "").strip():
+            assignment["voice_condition"] = _normalize_condition(req.voice, {"A", "B", "C"})
     return assignment
 
-def _build_qualtrics_redirect_url(base_url: str, *, sid: str = "", qid: str = "", study: str = "", status: str = "completed") -> str:
+def _build_qualtrics_redirect_url(base_url: str, *, rid: str = "", sid: str = "", qid: str = "", study: str = "", status: str = "completed") -> str:
     if not base_url:
         return ""
     separator = "&" if "?" in base_url else "?"
+    if rid:
+        return f"{base_url}{separator}{urlencode({'rid': rid, 'completion': status})}"
     return f"{base_url}{separator}{urlencode({'sid': sid, 'qid': qid, 'study': study, 'task_done': '1', 'completion': status})}"
 
 @app.post("/experiment/start")
 async def start_experiment(req: ExperimentStartRequest):
-    participant_id = (req.sid or req.participant_id or "").strip()
+    participant_id = (req.rid or req.sid or req.participant_id or "").strip()
     if not participant_id:
-        raise HTTPException(status_code=400, detail="participant_id or sid is required")
+        raise HTTPException(status_code=400, detail="participant_id, rid, or sid is required")
 
     qualtrics_entry = _is_qualtrics_start(req)
     # For formal Qualtrics entry, backend/config.py is the source of truth for
@@ -647,6 +672,8 @@ async def start_experiment(req: ExperimentStartRequest):
 
     if qualtrics_entry:
         missing = [name for name in QUALTRICS_REQUIRED_PARAMS if not str(getattr(req, name, "") or "").strip()]
+        if not str(req.rid or req.sid or "").strip():
+            missing.append("rid")
         if missing:
             database.log_system_error(
                 participant_id or None,
@@ -699,13 +726,13 @@ async def start_experiment(req: ExperimentStartRequest):
 
         database.upsert_participant(
             participant_id,
-            qualtrics_response_id=req.qid or "",
+            qualtrics_response_id=req.rid or req.qid or "",
             consent_status=("granted" if qualtrics_entry else "unknown"),
             assignment_mode=result.get("assignment_mode", mode),
             assigned_text_scenario=(assignment.get("text_condition") or assignment.get("text_order", "")),
             assigned_voice_condition=(assignment.get("voice_condition") or assignment.get("voice_order", "")),
             study_mode=req.study or "",
-            assigned_task_order=req.order or assignment.get("text_order") or "",
+            assigned_task_order=assignment.get("task_order") or assignment.get("assigned_study") or req.order or assignment.get("text_order") or "",
             randomization_block_id=randomization_block_id,
             randomization_cell=assignment_cell,
             device_browser=req.device_browser or "",
@@ -726,14 +753,16 @@ async def start_experiment(req: ExperimentStartRequest):
                 phase_label="Entry",
                 trigger_type="url_entry",
                 metadata={
+                    "rid": req.rid or participant_id,
                     "sid": participant_id,
-                    "qid": req.qid,
+                    "qid": req.rid or req.qid,
                     "study": req.study,
+                    "from": req.from_survey or req.from_ or "",
                     "assignment_mode": result.get("assignment_mode", mode),
                     "assignment_source": assignment.get("assignment_source", "backend_random"),
                     "text": assignment.get("text_condition") or assignment.get("text_order") or req.text,
                     "voice": assignment.get("voice_condition") or assignment.get("voice_order") or req.voice,
-                    "order": req.order or assignment.get("text_order") or "",
+                    "order": assignment.get("task_order") or assignment.get("assigned_study") or req.order or assignment.get("text_order") or "",
                     "randomization_cell": assignment_cell,
                     "token_hash": database.hash_token(req.token),
                     "redirect_url_present": bool(req.redirect_url or req.post_survey_url),
@@ -743,14 +772,16 @@ async def start_experiment(req: ExperimentStartRequest):
 
         result["qualtrics"] = {
             "enabled": qualtrics_entry,
+            "rid": req.rid or participant_id,
             "sid": participant_id,
-            "qid": req.qid or "",
+            "qid": req.rid or req.qid or "",
             "study": req.study or "",
+            "from": req.from_survey or req.from_ or "",
             "assignment_mode": result.get("assignment_mode", mode),
             "assignment_source": assignment.get("assignment_source", "backend_random" if qualtrics_entry else "app_random"),
             "text": assignment.get("text_condition") or assignment.get("text_order") or req.text or "",
             "voice": assignment.get("voice_condition") or assignment.get("voice_order") or req.voice or "",
-            "order": req.order or assignment.get("text_order") or "",
+            "order": assignment.get("task_order") or assignment.get("assigned_study") or req.order or assignment.get("text_order") or "",
             "redirect_url": req.redirect_url or req.post_survey_url or "",
         }
         result["saved_state"] = state_manager.load_participant_state(participant_id)
@@ -1031,17 +1062,18 @@ async def update_baseline(req: BaselineUpdateRequest):
 
 @app.post("/experiment/complete")
 async def complete_experiment(req: ExperimentCompleteRequest):
-    participant_id = (req.sid or req.participant_id or "").strip()
+    participant_id = (req.rid or req.sid or req.participant_id or "").strip()
     if not participant_id:
-        raise HTTPException(status_code=400, detail="participant_id or sid is required")
+        raise HTTPException(status_code=400, detail="participant_id, rid, or sid is required")
 
     status = req.completion_status or "completed"
     redirected = bool(req.redirect_url)
     database.mark_completed(participant_id, status=status, post_survey_redirected=redirected)
     final_redirect_url = _build_qualtrics_redirect_url(
         req.redirect_url or "",
+        rid=req.rid or "",
         sid=req.sid or participant_id,
-        qid=req.qid or "",
+        qid=req.rid or req.qid or "",
         study=req.study or "",
         status=status,
     )
@@ -1056,8 +1088,9 @@ async def complete_experiment(req: ExperimentCompleteRequest):
         phase_label="Completion",
         trigger_type="experiment_complete",
         metadata={
+            "rid": req.rid or participant_id,
             "sid": req.sid or participant_id,
-            "qid": req.qid,
+            "qid": req.rid or req.qid,
             "study": req.study,
             "completion_status": status,
             "event_time_client": req.event_time_client,

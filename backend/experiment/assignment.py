@@ -14,7 +14,18 @@ CONFIG_DIR = BASE_DIR / "experiment_configs"
 DATABASE_DIR = BASE_DIR / "database"
 ASSIGNMENT_FILE = DATABASE_DIR / "assignments.csv"
 
-VALID_MODES = {"between_subject", "within_subject"}
+VALID_MODES = {"between_subject", "within_subject", "single_study"}
+ASSIGNMENT_HEADERS = [
+    "created_at",
+    "participant_id",
+    "assignment_mode",
+    "assigned_study",
+    "task_order",
+    "text_condition",
+    "voice_condition",
+    "text_order",
+    "voice_order",
+]
 
 
 def get_default_assignment_mode() -> str:
@@ -25,12 +36,7 @@ def get_default_assignment_mode() -> str:
 
 
 def _apply_runtime_assignment_config(mode: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply editable backend/config.py capacity settings on top of JSON flow config.
-
-    The JSON files still define task docs/phases/order lists, while config.py is the
-    convenient place for the experimenter to adjust randomization mode and maximum
-    participants per condition/order.
-    """
+    """Apply editable root config.json capacity settings on top of JSON flow config."""
     domains = config.get("domains", {})
     text_domain = domains.get("text_travel", {})
     voice_domain = domains.get("voice_restaurant", {})
@@ -38,9 +44,15 @@ def _apply_runtime_assignment_config(mode: str, config: Dict[str, Any]) -> Dict[
     if mode == "between_subject":
         text_domain["max_per_condition"] = int(getattr(app_config, "BETWEEN_SUBJECT_TEXT_MAX_PER_CONDITION", text_domain.get("max_per_condition", 999999)))
         voice_domain["max_per_condition"] = int(getattr(app_config, "BETWEEN_SUBJECT_VOICE_MAX_PER_CONDITION", voice_domain.get("max_per_condition", 999999)))
+        config["randomize_task_order"] = bool(getattr(app_config, "BETWEEN_SUBJECT_RANDOMIZE_TASK_ORDER", True))
     elif mode == "within_subject":
         text_domain["max_per_order"] = int(getattr(app_config, "WITHIN_SUBJECT_TEXT_MAX_PER_ORDER", text_domain.get("max_per_order", 999999)))
         voice_domain["max_per_order"] = int(getattr(app_config, "WITHIN_SUBJECT_VOICE_MAX_PER_ORDER", voice_domain.get("max_per_order", 999999)))
+    elif mode == "single_study":
+        text_domain["max_total"] = int(getattr(app_config, "SINGLE_STUDY_TEXT_TOTAL_MAX", text_domain.get("max_total", 999999)))
+        voice_domain["max_total"] = int(getattr(app_config, "SINGLE_STUDY_VOICE_TOTAL_MAX", voice_domain.get("max_total", 999999)))
+        text_domain["max_per_condition"] = int(getattr(app_config, "SINGLE_STUDY_TEXT_MAX_PER_CONDITION", text_domain.get("max_per_condition", 999999)))
+        voice_domain["max_per_condition"] = int(getattr(app_config, "SINGLE_STUDY_VOICE_MAX_PER_CONDITION", voice_domain.get("max_per_condition", 999999)))
 
     return config
 
@@ -64,30 +76,23 @@ def load_config(mode: str) -> Dict[str, Any]:
 def _read_assignments() -> List[Dict[str, str]]:
     if not ASSIGNMENT_FILE.exists():
         return []
-
     with open(ASSIGNMENT_FILE, "r", newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
-def _write_assignment(row: Dict[str, str]) -> None:
+def _rewrite_assignments(rows: List[Dict[str, str]]) -> None:
     _ensure_database_dir()
+    with open(ASSIGNMENT_FILE, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=ASSIGNMENT_HEADERS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({h: row.get(h, "") for h in ASSIGNMENT_HEADERS})
 
-    file_exists = ASSIGNMENT_FILE.exists()
-    headers = [
-        "created_at",
-        "participant_id",
-        "assignment_mode",
-        "text_condition",
-        "voice_condition",
-        "text_order",
-        "voice_order",
-    ]
 
-    with open(ASSIGNMENT_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({h: row.get(h, "") for h in headers})
+def _write_assignment(row: Dict[str, str]) -> None:
+    rows = _read_assignments()
+    rows.append(row)
+    _rewrite_assignments(rows)
 
 
 def _existing_assignment(participant_id: str) -> Optional[Dict[str, str]]:
@@ -100,10 +105,11 @@ def _existing_assignment(participant_id: str) -> Optional[Dict[str, str]]:
 def _pick_with_capacity(items: List[str], counts: Dict[str, int], limit: int) -> str:
     available = [item for item in items if counts.get(item, 0) < limit]
     if not available:
-        # If all slots are full, fall back to the currently least-used item instead of crashing.
         min_count = min(counts.get(item, 0) for item in items)
         available = [item for item in items if counts.get(item, 0) == min_count]
-    return random.choice(available)
+    min_available = min(counts.get(item, 0) for item in available)
+    least_used = [item for item in available if counts.get(item, 0) == min_available]
+    return random.choice(least_used)
 
 
 def _build_counts(rows: List[Dict[str, str]], mode: str, key: str) -> Dict[str, int]:
@@ -115,6 +121,32 @@ def _build_counts(rows: List[Dict[str, str]], mode: str, key: str) -> Dict[str, 
         if value:
             counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def _build_single_study_counts(rows: List[Dict[str, str]]) -> Dict[str, int]:
+    counts = {"text": 0, "voice": 0}
+    for row in rows:
+        if row.get("assignment_mode") != "single_study":
+            continue
+        study = row.get("assigned_study") or ("text" if row.get("text_condition") else "voice" if row.get("voice_condition") else "")
+        if study in counts:
+            counts[study] += 1
+    return counts
+
+
+def _pick_single_study(config: Dict[str, Any], rows: List[Dict[str, str]]) -> str:
+    text_domain = config["domains"]["text_travel"]
+    voice_domain = config["domains"]["voice_restaurant"]
+    counts = _build_single_study_counts(rows)
+    limits = {
+        "text": int(text_domain.get("max_total", 999999)),
+        "voice": int(voice_domain.get("max_total", 999999)),
+    }
+    available = [study for study in ["text", "voice"] if counts.get(study, 0) < limits.get(study, 999999)]
+    if not available:
+        available = ["text", "voice"]
+    min_count = min(counts.get(study, 0) for study in available)
+    return random.choice([study for study in available if counts.get(study, 0) == min_count])
 
 
 def create_or_get_assignment(participant_id: str, requested_mode: str) -> Dict[str, str]:
@@ -129,6 +161,8 @@ def create_or_get_assignment(participant_id: str, requested_mode: str) -> Dict[s
         "created_at": datetime.now().isoformat(),
         "participant_id": participant_id,
         "assignment_mode": requested_mode,
+        "assigned_study": "",
+        "task_order": "",
         "text_condition": "",
         "voice_condition": "",
         "text_order": "",
@@ -141,6 +175,7 @@ def create_or_get_assignment(participant_id: str, requested_mode: str) -> Dict[s
 
         text_counts = _build_counts(rows, requested_mode, "text_condition")
         voice_counts = _build_counts(rows, requested_mode, "voice_condition")
+        order_counts = _build_counts(rows, requested_mode, "task_order")
 
         assignment["text_condition"] = _pick_with_capacity(
             text_domain["conditions"], text_counts, int(text_domain.get("max_per_condition", 999999))
@@ -148,6 +183,10 @@ def create_or_get_assignment(participant_id: str, requested_mode: str) -> Dict[s
         assignment["voice_condition"] = _pick_with_capacity(
             voice_domain["conditions"], voice_counts, int(voice_domain.get("max_per_condition", 999999))
         )
+        if config.get("randomize_task_order", True):
+            assignment["task_order"] = _pick_with_capacity(["text_first", "voice_first"], order_counts, 999999)
+        else:
+            assignment["task_order"] = "text_first"
 
     elif requested_mode == "within_subject":
         text_domain = config["domains"]["text_travel"]
@@ -162,6 +201,24 @@ def create_or_get_assignment(participant_id: str, requested_mode: str) -> Dict[s
         assignment["voice_order"] = _pick_with_capacity(
             voice_domain["orders"], voice_counts, int(voice_domain.get("max_per_order", 999999))
         )
+        assignment["task_order"] = "text_first"
+
+    elif requested_mode == "single_study":
+        text_domain = config["domains"]["text_travel"]
+        voice_domain = config["domains"]["voice_restaurant"]
+        assigned_study = _pick_single_study(config, rows)
+        assignment["assigned_study"] = assigned_study
+
+        if assigned_study == "text":
+            text_counts = _build_counts(rows, requested_mode, "text_condition")
+            assignment["text_condition"] = _pick_with_capacity(
+                text_domain["conditions"], text_counts, int(text_domain.get("max_per_condition", 999999))
+            )
+        else:
+            voice_counts = _build_counts(rows, requested_mode, "voice_condition")
+            assignment["voice_condition"] = _pick_with_capacity(
+                voice_domain["conditions"], voice_counts, int(voice_domain.get("max_per_condition", 999999))
+            )
 
     _write_assignment(assignment)
     return assignment
@@ -209,41 +266,53 @@ def _build_domain_phases(domain_id: str, condition: str, run_index: int, domain_
     return phases
 
 
+def _append_text_run(phases: List[Dict[str, Any]], text_config: Dict[str, Any], condition: str, idx: int) -> None:
+    phases.extend(_build_domain_phases("text_travel", condition, idx, text_config))
+    phases.append(_read_only_phase(f"text_questionnaire_run{idx}", "文字旅遊問卷", "文字旅遊任務問卷", "text_questionnaire"))
+
+
+def _append_voice_run(phases: List[Dict[str, Any]], voice_config: Dict[str, Any], condition: str, idx: int) -> None:
+    phases.extend(_build_domain_phases("voice_restaurant", condition, idx, voice_config))
+    phases.append(_read_only_phase(f"voice_questionnaire_run{idx}", "餐廳語音問卷", "餐廳語音任務問卷", "voice_questionnaire"))
+
+
 def build_flow(config: Dict[str, Any], assignment: Dict[str, str]) -> List[Dict[str, Any]]:
     phases: List[Dict[str, Any]] = []
     phases.append(_read_only_phase("intro", "實驗介紹", "實驗內容介紹", "intro"))
 
     text_config = config["domains"]["text_travel"]
     voice_config = config["domains"]["voice_restaurant"]
+    mode = assignment.get("assignment_mode", "between_subject")
 
-    if assignment["assignment_mode"] == "between_subject":
-        text_conditions = [assignment["text_condition"]]
-        voice_conditions = [assignment["voice_condition"]]
-    else:
-        text_conditions = list(assignment["text_order"])
-        voice_conditions = list(assignment["voice_order"])
+    if mode == "between_subject":
+        text_condition = assignment.get("text_condition", "")
+        voice_condition = assignment.get("voice_condition", "")
+        task_order = assignment.get("task_order") or "text_first"
+        if task_order == "voice_first":
+            if voice_condition:
+                _append_voice_run(phases, voice_config, voice_condition, 1)
+            if text_condition:
+                _append_text_run(phases, text_config, text_condition, 1)
+        else:
+            if text_condition:
+                _append_text_run(phases, text_config, text_condition, 1)
+            if voice_condition:
+                _append_voice_run(phases, voice_config, voice_condition, 1)
 
-    for idx, condition in enumerate(text_conditions, start=1):
-        phases.extend(_build_domain_phases("text_travel", condition, idx, text_config))
-        phases.append(
-            _read_only_phase(
-                f"text_questionnaire_run{idx}",
-                "文字旅遊問卷",
-                "文字旅遊任務問卷",
-                "text_questionnaire",
-            )
-        )
+    elif mode == "within_subject":
+        text_conditions = list(assignment.get("text_order", ""))
+        voice_conditions = list(assignment.get("voice_order", ""))
+        for idx, condition in enumerate(text_conditions, start=1):
+            _append_text_run(phases, text_config, condition, idx)
+        for idx, condition in enumerate(voice_conditions, start=1):
+            _append_voice_run(phases, voice_config, condition, idx)
 
-    for idx, condition in enumerate(voice_conditions, start=1):
-        phases.extend(_build_domain_phases("voice_restaurant", condition, idx, voice_config))
-        phases.append(
-            _read_only_phase(
-                f"voice_questionnaire_run{idx}",
-                "餐廳語音問卷",
-                "餐廳語音任務問卷",
-                "voice_questionnaire",
-            )
-        )
+    elif mode == "single_study":
+        assigned_study = assignment.get("assigned_study") or ("text" if assignment.get("text_condition") else "voice")
+        if assigned_study == "text":
+            _append_text_run(phases, text_config, assignment.get("text_condition", "A") or "A", 1)
+        else:
+            _append_voice_run(phases, voice_config, assignment.get("voice_condition", "A") or "A", 1)
 
     phases.append(_read_only_phase("end", "實驗結束", "完成實驗", "end"))
     return phases
@@ -253,7 +322,6 @@ def start_experiment(participant_id: str, assignment_mode: str) -> Dict[str, Any
     config = load_config(assignment_mode)
     assignment = create_or_get_assignment(participant_id, assignment_mode)
 
-    # If a participant already exists with a different mode, keep the original assignment and load its config.
     actual_mode = assignment.get("assignment_mode", assignment_mode)
     if actual_mode != assignment_mode:
         config = load_config(actual_mode)
