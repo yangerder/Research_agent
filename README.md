@@ -37,18 +37,25 @@ This means the frontend URL can stay fixed, while the backend tunnel URL may cha
 - Pilot/formal run mode configuration
 - Text task and voice task support
 - Phase 0 baseline task before formal tasks
-- Qualtrics URL entry validation
-- Qualtrics post-task redirect
+- Phase 0 baseline results hidden from normal participants and visible only in researcher mode
+- Qualtrics URL entry with `rid`-first participant identification
+- Qualtrics post-task redirect and return flow using `from=text_survey` / `from=voice_survey`
 - Backend random assignment
-- Between-subject and within-subject assignment modes
+- Three assignment modes:
+  - `between_subject`: one text task and one voice task per participant
+  - `within_subject`: multiple text/voice conditions per participant
+  - `single_study`: each participant completes only text or only voice
+- 50/50 randomized task order in `between_subject` mode
+- Configurable participant capacity for text/voice and A/B/C conditions
 - SQLite logging database
 - Action logs, event logs, conversation logs, timing logs, and system errors
 - T1/T4/T5 client timing measurement
 - Server processing time, LLM TTFT, and total generation time
 - Whisper/STT timing and voice duration logging
 - Voice Condition A: automatic VAD cut-off
-- Voice Condition B: silence hint / manual voice submission
+- Voice Condition B: pure manual voice submission, without silence hint or auto-submit
 - Voice Condition C: repairable VAD with “continue recording” or “send now”
+- Voice Condition C repair gate limited by `repair_gate_max_per_turn`
 - Repair gate event logging: `repair_gate_shown` and `repair_gate_decision`
 - Voice Condition C metadata logging:
   - `Turn_ID`
@@ -62,6 +69,9 @@ This means the frontend URL can stay fixed, while the backend tunnel URL may cha
   - `LLM_Provider`
   - `LLM_Model`
   - `LLM_Run_Mode`
+- Fixed 6 / 4 / 6 round text-task flow
+- Sticky per-round text task guidance above the chat area
+- Typewriter-style phase transition card after the required round count is reached
 - Research tools panel protected by a password
 - Participant ID hidden from the normal participant UI
 - Windows PowerShell deployment scripts
@@ -111,12 +121,25 @@ Research_agent/
 │  │  └─ scenario_c.py
 │  ├─ experiment/
 │  │  ├─ assignment.py
-│  │  └─ database.py
+│  │  ├─ database.py
+│  │  └─ state.py
 │  ├─ experiment_configs/
 │  │  ├─ between_subject.json
-│  │  └─ within_subject.json
+│  │  ├─ within_subject.json
+│  │  ├─ single_study.json
+│  │  └─ default_flow.json
 │  ├─ task_docs/
-│  │  └─ phase0_baseline.md
+│  │  ├─ phase0_baseline.md
+│  │  ├─ intro.md
+│  │  ├─ end.md
+│  │  ├─ text_questionnaire.md
+│  │  ├─ voice_questionnaire.md
+│  │  ├─ text_travel_phase_1.md
+│  │  ├─ text_travel_phase_2.md
+│  │  ├─ text_travel_phase_3.md
+│  │  ├─ voice_restaurant_phase_1.md
+│  │  ├─ voice_restaurant_phase_2.md
+│  │  └─ voice_restaurant_phase_3.md
 │  ├─ utils/
 │  │  └─ logger.py
 │  └─ database/
@@ -294,9 +317,23 @@ Important settings include:
 ```json
 {
   "dev_password": "1234",
+
   "experiment_assignment_mode": "between_subject",
+  "qualtrics_use_rid_only": true,
   "qualtrics_allow_url_condition_override": true,
   "qualtrics_require_condition_in_url": false,
+
+  "between_subject_randomize_task_order": true,
+  "between_subject_text_max_per_condition": 20,
+  "between_subject_voice_max_per_condition": 20,
+
+  "within_subject_text_max_per_order": 10,
+  "within_subject_voice_max_per_order": 10,
+
+  "single_study_text_total_max": 60,
+  "single_study_voice_total_max": 60,
+  "single_study_text_max_per_condition": 20,
+  "single_study_voice_max_per_condition": 20,
 
   "llm_run_mode": "pilot",
   "pilot_llm_provider": "groq",
@@ -317,7 +354,8 @@ Important settings include:
   "vad_threshold": 0.015,
   "vad_silence_timeout_a": 1.0,
   "vad_silence_timeout_b": 1.0,
-  "vad_silence_timeout_c": 0.7
+  "vad_silence_timeout_c": 1.5,
+  "repair_gate_max_per_turn": 1
 }
 ```
 
@@ -359,9 +397,11 @@ Expected response includes:
 vad_timeout_a
 vad_timeout_b
 vad_timeout_c
+repair_gate_max_per_turn
 llm_provider
 llm_model
 llm_run_mode
+assignment_mode
 ```
 
 ---
@@ -465,42 +505,82 @@ cd C:\Users\USER\Desktop\Research_agent
 
 ---
 
-## 9. Qualtrics Entry URL
+## 9. Qualtrics Entry and Survey Return Flow
 
-The frontend URL is fixed. Example:
+The current recommended ID design uses **Qualtrics ResponseID** as the single participant identifier.
 
-```text
-https://agent-ten-topaz.vercel.app
-```
-
-For manual testing, use a URL like:
+The website uses:
 
 ```text
-https://agent-ten-topaz.vercel.app/?sid=P_TEST_001&qid=R_TEST_001&consent=yes&study=main&token=testtoken&redirect_url=https%3A%2F%2Fexample.com%2Fposttest
+rid = Qualtrics ResponseID
+participantId = rid
+Subject_ID = rid
+Qualtrics_Response_ID = rid
 ```
 
-For Qualtrics, use embedded fields. Example format:
+Legacy `sid` and `qid` parameters are still tolerated for old testing links, but the recommended flow is `rid`-first.
+
+### 9.1 Initial Qualtrics survey → website
+
+Use this as the redirect URL at the end of the initial Qualtrics consent / pre-survey:
 
 ```text
-https://agent-ten-topaz.vercel.app/?sid=${e://Field/sid}&qid=${e://Field/ResponseID}&consent=yes&study=main&token=YOUR_TOKEN&redirect_url=https%3A%2F%2FYOUR_QUALTRICS_POST_SURVEY_URL
+https://agent-ten-topaz.vercel.app/?rid=${e://Field/ResponseID}&consent=yes&study=pilot&token=testtoken
 ```
 
-The condition can be omitted if backend random assignment is enabled.
-
-Optional URL parameters for pilot testing:
+Example manual test URL:
 
 ```text
-text=A|B|C
-voice=A|B|C
+https://agent-ten-topaz.vercel.app/?rid=R_TEST_001&consent=yes&study=pilot&token=testtoken
 ```
 
-Example for testing Voice Condition C:
+### 9.2 Website → text questionnaire
+
+After the assigned text task is completed, the website opens the text questionnaire with only `rid`:
 
 ```text
-http://localhost:3000/?sid=P_TEST_C_001&qid=R_TEST_C_001&consent=yes&study=pilot&token=test&voice=C&text=A&redirect_url=https%3A%2F%2Fexample.com%2Fpost
+https://nycu.qualtrics.com/jfe/form/SV_9uCgbnfr9X0lP8O?rid=R_TEST_001
 ```
 
-If URL override is disabled in `config.json`, backend assignment will be used even if condition parameters are provided.
+### 9.3 Text questionnaire → website
+
+In the text questionnaire Survey Flow, add Embedded Data:
+
+```text
+rid
+```
+
+Then set the text questionnaire end redirect URL to:
+
+```text
+https://agent-ten-topaz.vercel.app/?rid=${e://Field/rid}&consent=yes&study=pilot&token=testtoken&from=text_survey
+```
+
+When the website receives `from=text_survey`, it marks the text questionnaire phase complete and moves to the next phase.
+
+### 9.4 Website → voice questionnaire
+
+After the assigned voice task is completed, the website opens the voice questionnaire with only `rid`:
+
+```text
+https://nycu.qualtrics.com/jfe/form/SV_80waOB6x0SqB8yi?rid=R_TEST_001
+```
+
+### 9.5 Voice questionnaire → website
+
+In the voice questionnaire Survey Flow, add Embedded Data:
+
+```text
+rid
+```
+
+Then set the voice questionnaire end redirect URL to:
+
+```text
+https://agent-ten-topaz.vercel.app/?rid=${e://Field/rid}&consent=yes&study=pilot&token=testtoken&from=voice_survey
+```
+
+When the website receives `from=voice_survey`, it marks the voice questionnaire phase complete and moves to the next phase.
 
 ---
 
@@ -517,16 +597,22 @@ Important settings:
 ```json
 {
   "experiment_assignment_mode": "between_subject",
-  "qualtrics_allow_url_condition_override": true,
-  "qualtrics_require_condition_in_url": false,
+
+  "between_subject_randomize_task_order": true,
   "between_subject_text_max_per_condition": 20,
   "between_subject_voice_max_per_condition": 20,
+
   "within_subject_text_max_per_order": 10,
-  "within_subject_voice_max_per_order": 10
+  "within_subject_voice_max_per_order": 10,
+
+  "single_study_text_total_max": 60,
+  "single_study_voice_total_max": 60,
+  "single_study_text_max_per_condition": 20,
+  "single_study_voice_max_per_condition": 20
 }
 ```
 
-### Between-subject mode
+### 10.1 Between-subject mode
 
 Each participant receives one text condition and one voice condition.
 
@@ -535,7 +621,17 @@ Text:  A / B / C
 Voice: A / B / C
 ```
 
-### Within-subject mode
+If `between_subject_randomize_task_order` is `true`, the task order is balanced approximately 50/50:
+
+```text
+text_first:
+Phase 0 → Intro → Text Travel → Text Questionnaire → Voice Restaurant → Voice Questionnaire → End
+
+voice_first:
+Phase 0 → Intro → Voice Restaurant → Voice Questionnaire → Text Travel → Text Questionnaire → End
+```
+
+### 10.2 Within-subject mode
 
 Each participant receives an ordered sequence. The available orders depend on the experiment config files in:
 
@@ -550,6 +646,44 @@ Text orders:  ABC / ACB / BAC / BCA / CAB / CBA
 Voice orders: ABC / ACB / BAC / BCA / CAB / CBA
 ```
 
+### 10.3 Single-study mode
+
+Each participant completes only one study type:
+
+```text
+text_only:
+Phase 0 → Intro → Text Travel → Text Questionnaire → End
+
+voice_only:
+Phase 0 → Intro → Voice Restaurant → Voice Questionnaire → End
+```
+
+The backend balances assignment between text and voice using:
+
+```json
+{
+  "single_study_text_total_max": 60,
+  "single_study_voice_total_max": 60
+}
+```
+
+Then it balances A/B/C conditions using:
+
+```json
+{
+  "single_study_text_max_per_condition": 20,
+  "single_study_voice_max_per_condition": 20
+}
+```
+
+To use this mode, set:
+
+```json
+{
+  "experiment_assignment_mode": "single_study"
+}
+```
+
 ---
 
 ## 11. Text and Voice Conditions
@@ -562,11 +696,21 @@ Text B: explicit warning / user-managed new conversation
 Text C: summary migration
 ```
 
+The current text task uses a fixed 6 / 4 / 6 round structure:
+
+```text
+Phase 1: 6 rounds
+Phase 2: 4 rounds
+Phase 3: 6 rounds
+```
+
+The UI displays a sticky per-round prompt above the chat area. The prompt can be dismissed by the participant. After the required round count is reached, the input is locked and a typewriter-style transition card appears.
+
 ### 11.2 Voice conditions
 
 ```text
 Voice A: automatic VAD cut-off after silence
-Voice B: silence hint, user manually submits
+Voice B: pure manual submission; no silence hint, no pause, no auto-submit
 Voice C: repairable VAD
 ```
 
@@ -615,6 +759,8 @@ Voice frame counts
 ```
 
 The formal tasks are locked until Phase 0 is completed.
+
+Normal participants only see completion status. Detailed baseline values are hidden and only shown after the researcher unlocks the research tools panel.
 
 Phase 0 values are stored in the `Participants` table, including:
 
@@ -674,7 +820,28 @@ System_Errors
 Data_Quality_Flags
 ```
 
-### 14.1 Action_Logs important fields
+### 14.1 Participants important fields
+
+```text
+Subject_ID
+Qualtrics_Response_ID
+Consent_Status
+Assigned_Text_Scenario
+Assigned_Voice_Condition
+Assigned_Task_Order
+Study_Mode
+Assignment_Mode
+Randomization_Block_ID
+Randomization_Cell
+Task_Completion_Status
+PreSurvey_Completed
+PostSurvey_Redirected
+Phase0_Completed
+Created_At
+Completed_At
+```
+
+### 14.2 Action_Logs important fields
 
 Core fields:
 
@@ -735,7 +902,7 @@ LLM_Run_Mode
 
 ---
 
-### 14.2 Check database tables
+### 14.3 Check database tables
 
 ```powershell
 cd C:\Users\USER\Desktop\Research_agent
@@ -749,7 +916,7 @@ conn.close()
 '@ | python
 ```
 
-### 14.3 Show latest participants
+### 14.4 Show latest participants
 
 ```powershell
 cd C:\Users\USER\Desktop\Research_agent
@@ -763,7 +930,8 @@ conn.row_factory = sqlite3.Row
 for r in conn.execute("""
 SELECT Subject_ID, Qualtrics_Response_ID, Consent_Status, Study_Mode,
        Assigned_Text_Scenario, Assigned_Voice_Condition, Assigned_Task_Order,
-       PreSurvey_Completed, Task_Completion_Status, Created_At
+       Assignment_Mode, Randomization_Cell, PreSurvey_Completed,
+       Task_Completion_Status, Created_At
 FROM Participants
 ORDER BY Created_At DESC
 LIMIT 10
@@ -774,7 +942,7 @@ conn.close()
 '@ | python
 ```
 
-### 14.4 Backup database before formal testing
+### 14.5 Backup database before formal testing
 
 Before a real experiment session:
 
@@ -815,12 +983,12 @@ https://agent-ten-topaz.vercel.app
 
 Expected result: experiment interface loads.
 
-### 15.3 Test Qualtrics-style entry
+### 15.3 Test rid-style entry
 
-Use a new `sid` each time:
+Use a new `rid` each time:
 
 ```text
-https://agent-ten-topaz.vercel.app/?sid=P_REMOTE_TEST_001&qid=R_REMOTE_TEST_001&consent=yes&study=main&token=testtoken&redirect_url=https%3A%2F%2Fexample.com%2Fposttest
+https://agent-ten-topaz.vercel.app/?rid=R_REMOTE_TEST_001&consent=yes&study=pilot&token=testtoken
 ```
 
 Expected result:
@@ -829,14 +997,62 @@ Expected result:
 No manual condition selection
 Phase 0 baseline appears first
 Formal tasks remain locked until Phase 0 is completed
+Subject_ID equals rid in SQLite
 ```
 
-### 15.4 Test Voice Condition C
+### 15.4 Test between-subject task order
 
-Use:
+Set:
+
+```json
+{
+  "experiment_assignment_mode": "between_subject",
+  "between_subject_randomize_task_order": true
+}
+```
+
+Use several fresh `rid` values:
 
 ```text
-https://agent-ten-topaz.vercel.app/?sid=P_REMOTE_TEST_C_001&qid=R_REMOTE_TEST_C_001&consent=yes&study=pilot&token=testtoken&voice=C&text=A&redirect_url=https%3A%2F%2Fexample.com%2Fposttest
+R_ORDER_001
+R_ORDER_002
+R_ORDER_003
+R_ORDER_004
+```
+
+Expected result:
+
+```text
+Some participants are assigned text_first.
+Some participants are assigned voice_first.
+```
+
+### 15.5 Test single-study mode
+
+Set:
+
+```json
+{
+  "experiment_assignment_mode": "single_study"
+}
+```
+
+Use several fresh `rid` values.
+
+Expected result:
+
+```text
+Some participants only receive the text task.
+Some participants only receive the voice task.
+All participants still complete Phase 0 first.
+```
+
+### 15.6 Test Voice Condition C
+
+Use a fresh `rid` assigned to Voice C, or temporarily enable URL override for testing:
+
+```text
+https://agent-ten-topaz.vercel.app/?rid=R_REMOTE_TEST_C_001&consent=yes&study=pilot&token=testtoken&voice=C&text=A
 ```
 
 Expected result:
@@ -846,12 +1062,35 @@ Voice task reaches Condition C
 Silence triggers repair gate
 Prompt appears in Traditional Chinese
 User can choose 繼續錄音 or 現在送出
+Repair gate appears at most repair_gate_max_per_turn times per voice turn
 Final transcript is sent to the AI
 Action_Logs records Condition C fields
 Event_Logs records repair_gate_shown / repair_gate_decision
 ```
 
-### 15.5 Check browser Network tab
+### 15.7 Test questionnaire return flow
+
+Text survey return:
+
+```text
+https://agent-ten-topaz.vercel.app/?rid=R_REMOTE_TEST_001&consent=yes&study=pilot&token=testtoken&from=text_survey
+```
+
+Voice survey return:
+
+```text
+https://agent-ten-topaz.vercel.app/?rid=R_REMOTE_TEST_001&consent=yes&study=pilot&token=testtoken&from=voice_survey
+```
+
+Expected result:
+
+```text
+The corresponding questionnaire phase is marked completed.
+The participant continues to the next phase.
+The same rid is used as the participant identity.
+```
+
+### 15.8 Check browser Network tab
 
 Chrome:
 
@@ -1018,6 +1257,28 @@ Get-Content .remote_logs\vercel_deploy*.err.log -Tail 100
 
 ---
 
+### 17.8 Participant is stuck on questionnaire phase
+
+Use a return URL with the correct `from` marker:
+
+```text
+&from=text_survey
+```
+
+or:
+
+```text
+&from=voice_survey
+```
+
+Also make sure the Qualtrics questionnaire has Embedded Data field:
+
+```text
+rid
+```
+
+---
+
 ## 18. Data Safety Before Formal Experiments
 
 Before each formal data collection session:
@@ -1037,7 +1298,7 @@ Recommended formal experiment checklist:
 5. Confirm backend tunnel /config works remotely
 6. Confirm Vercel frontend loads
 7. Confirm Network requests go to trycloudflare.com
-8. Run one test participant with a fresh sid
+8. Run one test participant with a fresh rid
 9. Confirm SQLite receives data
 10. Backup experiment.db
 11. Start participant collection
@@ -1118,7 +1379,84 @@ If you want to version the database schema but not real participant data, export
 
 ---
 
-## 20. Quick Command Summary
+## 20. Upload to GitHub
+
+### 20.1 Check changed files
+
+```powershell
+cd C:\Users\USER\Desktop\Research_agent
+git status
+```
+
+### 20.2 Make sure runtime data is ignored
+
+Check `.gitignore` includes the entries in Section 19.
+
+If runtime files were already tracked before, remove them from Git tracking while keeping local files:
+
+```powershell
+git rm --cached -r backend/database
+git rm --cached -r .remote_logs
+git rm --cached -r frontend/.next
+git rm --cached -r frontend/node_modules
+```
+
+If a folder does not exist or is not tracked, Git may print an error. That is okay.
+
+### 20.3 Stage project files
+
+```powershell
+git add README.md .gitignore config.json
+git add backend/config.py backend/main.py backend/core backend/experiment backend/experiment_configs backend/task_docs backend/utils
+git add frontend/app frontend/services frontend/package.json frontend/package-lock.json
+git add scripts deployment AUTHORS.md
+```
+
+### 20.4 Review what will be committed
+
+```powershell
+git status
+git diff --cached --stat
+```
+
+Make sure you do **not** see:
+
+```text
+backend/.env
+backend/database/experiment.db
+backend/database/*.csv
+backend/database/*.jsonl
+backend/database/participant_states/
+.remote_logs/
+frontend/.next/
+frontend/node_modules/
+```
+
+### 20.5 Commit
+
+```powershell
+git commit -m "update experiment platform with rid flow and single study mode"
+```
+
+### 20.6 Push
+
+If the remote is already set:
+
+```powershell
+git push origin main
+```
+
+If this is a new GitHub repository:
+
+```powershell
+git remote add origin https://github.com/<YOUR_USERNAME>/<YOUR_REPO_NAME>.git
+git branch -M main
+git push -u origin main
+```
+
+---
+
+## 21. Quick Command Summary
 
 ### Local dev
 
@@ -1159,7 +1497,7 @@ conn.close()
 
 ---
 
-## 21. Author
+## 22. Author
 
 This project was designed and implemented by:
 
